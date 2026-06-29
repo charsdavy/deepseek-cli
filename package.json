@@ -1,0 +1,41 @@
+{
+  "name": "deepseek-cli",
+  "version": "0.3.0",
+  "description": "An agentic command-line AI coding assistant powered by DeepSeek.",
+  "type": "module",
+  "bin": {
+    "deepseek": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --compile --minify --outfile dist/deepseek",
+    "postbuild": "node -e \"require('fs').chmodSync('dist/deepseek', 0o755)\"",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "openai": "^4.73.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/charsdavy/deepseek-cli",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/charsdavy/deepseek-cli.git"
+  },
+  "keywords": [
+    "deepseek",
+    "cli",
+    "ai",
+    "agent",
+    "coding-assistant"
+  ]
+}

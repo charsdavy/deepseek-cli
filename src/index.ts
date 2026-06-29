@@ -1,0 +1,62 @@
+#!/usr/bin/env bun
+// Entry point — dispatches subcommands based on parsed argv.
+
+import { ArgError, parseArgs, printHelp, printVersion } from "./cli.ts";
+import { runAuthCommand } from "./commands/auth.ts";
+import { runSessionsCommand } from "./commands/sessions.ts";
+import { runConfigCommand } from "./commands/config.ts";
+import { runChat } from "./commands/chat.ts";
+import { printError } from "./ui/render.ts";
+
+async function main(): Promise<void> {
+  let args;
+  try {
+    args = parseArgs(process.argv);
+  } catch (e) {
+    if (e instanceof ArgError) {
+      printError(e.message);
+      printHelp();
+      process.exit(2);
+    }
+    throw e;
+  }
+
+  switch (args.command) {
+    case "help":
+      printHelp();
+      return;
+    case "version":
+      printVersion();
+      return;
+    case "auth":
+      await runAuthCommand();
+      return;
+    case "sessions":
+      await runSessionsCommand();
+      return;
+    case "config":
+      await runConfigCommand();
+      return;
+    case "chat":
+      await runChat({
+        prompt: args.prompt,
+        model: args.model,
+        system: args.system,
+        reasoning: args.reasoning,
+        continueLast: args.continueLast,
+        resume: args.resume,
+        yolo: args.yolo,
+        cwd: args.cwd,
+        temperature: args.temperature,
+        maxTokens: args.maxTokens,
+        verbose: args.verbose,
+      });
+      return;
+  }
+}
+
+main().catch((e) => {
+  const msg = e instanceof Error ? e.message : String(e);
+  printError(`fatal: ${msg}`);
+  process.exit(1);
+});
