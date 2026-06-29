@@ -12,11 +12,12 @@ import { buildSystemPrompt } from "../prompt/builder.ts";
 import { makeStreamRenderer, runAgentLoop } from "../agent/loop.ts";
 import { PermissionManager } from "../agent/permissions.ts";
 import { ToolRegistry } from "../tools/registry.ts";
-import type { ToolContext, ToolResult } from "../tools/types.ts";
+import type { Tool, ToolContext, ToolResult } from "../tools/types.ts";
 import { newSession, newSessionId, loadSession, listSessions, searchSessions, saveSession, type Session } from "../session/store.ts";
 import { listSkills, readSkill } from "../skills/store.ts";
+import { McpRegistry, loadMcpConfig } from "../mcp/registry.ts";
 import { paint, symbol } from "../ui/theme.ts";
-import { blank, printError, printSystem, printTip, setOutputSilent, writeLine } from "../ui/render.ts";
+import { blank, printBordered, printError, printSeparator, printSystem, printTip, setOutputSilent, writeLine } from "../ui/render.ts";
 import { askMultiline, closeReadline } from "../ui/input.ts";
 import { spinner } from "../ui/spinner.ts";
 
@@ -35,6 +36,7 @@ export interface ChatArgs {
   temperature?: number;
   maxTokens?: number;
   outputFormat?: "text" | "json";
+  noMcp?: boolean;
   verbose?: boolean;
 }
 
@@ -142,6 +144,28 @@ export async function runChat(args: ChatArgs): Promise<void> {
     skipAll,
   });
 
+  // MCP servers (stdio transport). Best-effort: a failed server is skipped
+  // without crashing the session. --no-mcp disables the whole subsystem.
+  const mcp = new McpRegistry();
+  if (args.noMcp !== true) {
+    const mcpConfig = await loadMcpConfig(cwd);
+    const serverCount = Object.keys(mcpConfig.mcpServers).length;
+    if (serverCount > 0) {
+      printSystem(`mcp: connecting ${serverCount} server${serverCount === 1 ? "" : "s"}…`, "blue");
+      await mcp.load(mcpConfig);
+      for (const t of mcp.toTools()) tools.register(t);
+    }
+  }
+  // Ensure MCP child processes are torn down on exit.
+  const closeMcp = () => { mcp.close().catch(() => {}); };
+
+  // Surface server enable/disable + per-server tools to the /mcp command.
+  const mcpApi: McpApi = {
+    servers: () => mcp.status().map((s) => ({ name: s.name, enabled: s.enabled, toolCount: s.toolCount })),
+    toggle: (name: string) => mcp.toggleServer(name),
+    toolsForServer: (name: string) => mcp.toolsForServer(name),
+  };
+
   const toolCtx: ToolContext = { cwd };
 
   // Per-turn abort holder. SIGINT aborts the active turn; a second SIGINT with
@@ -190,21 +214,25 @@ export async function runChat(args: ChatArgs): Promise<void> {
     } finally {
       turnAbort.current = null;
       process.off("SIGINT", onSigInt);
+      closeMcp();
       closeReadline();
     }
     return;
   }
 
   // ---- Interactive REPL ----
-  printWelcome(model, reasoning, skipAll);
-  if (baseUrl) writeLine(`  ${paint.gray("endpoint:")} ${paint.gray(baseUrl)}`);
+  printWelcome(model, reasoning, skipAll, baseUrl);
   printTip("type /help for commands, /exit to quit, Ctrl-C to abort a turn");
   blank();
 
+  let firstPrompt = true;
   try {
     while (true) {
       let input: string;
       try {
+        // A subtle rule between turns gives the REPL a Claude-Code-like rhythm.
+        if (!firstPrompt) printSeparator();
+        firstPrompt = false;
         input = await askMultiline(`${paint.bold(paint.bright.cyan(`${symbol.user} You`))} ${paint.gray("›")} `);
       } catch {
         break;
@@ -239,7 +267,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
           }
           continue;
         }
-        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi });
+        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi });
         if (handled === "exit") break;
         continue;
       }
@@ -263,6 +291,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
   } finally {
     process.off("SIGINT", onSigInt);
     await saveSession(session).catch(() => {});
+    closeMcp();
     closeReadline();
     printSystem("Goodbye! 👋", "magenta");
   }
@@ -428,10 +457,16 @@ function ensureSystemPrefix(messages: ChatMessage[], systemPrompt: string): void
   messages[0].content = systemPrompt;
 }
 
-function printWelcome(model: string, reasoning: boolean, yolo: boolean): void {
-  writeLine(`${paint.magenta(paint.bold(`${symbol.rocket} DeepSeek CLI`))}`);
-  writeLine(`  ${paint.gray("model:")} ${paint.cyan(model)}${reasoning ? ` ${paint.gray("· reasoning on")}` : ""}${yolo ? ` ${paint.bright.yellow("· yolo")}` : ""}`);
-  writeLine(`  ${paint.gray("cwd:")}   ${paint.gray(process.cwd())}`);
+function printWelcome(model: string, reasoning: boolean, yolo: boolean, baseUrl?: string): void {
+  const lines: string[] = [];
+  lines.push(
+    `${paint.gray("model:")} ${paint.cyan(model)}` +
+      `${reasoning ? ` ${paint.gray("· reasoning on")}` : ""}` +
+      `${yolo ? ` ${paint.bright.yellow("· yolo")}` : ""}`,
+  );
+  lines.push(`${paint.gray("cwd:")}   ${paint.gray(process.cwd())}`);
+  if (baseUrl) lines.push(`${paint.gray("api:")}   ${paint.gray(baseUrl)}`);
+  printBordered(`${symbol.rocket} DeepSeek CLI`, lines.join("\n"), "magenta");
 }
 
 interface SlashCtx {
@@ -441,6 +476,7 @@ interface SlashCtx {
   tools: ToolRegistry;
   setModel: (id: string) => void;
   skills: SkillsApi;
+  mcp: McpApi;
 }
 
 /** Skills API handed to the slash handler (built in runChat). */
@@ -449,6 +485,13 @@ interface SkillsApi {
   active: () => string[];
   toggle: (name: string) => Promise<boolean>;
   clear: () => void;
+}
+
+/** MCP API handed to the /mcp slash handler. */
+interface McpApi {
+  servers: () => { name: string; enabled: boolean; toolCount: number }[];
+  toggle: (name: string) => boolean;
+  toolsForServer: (name: string) => Tool[];
 }
 
 async function handleSlashCommand(input: string, session: Session, ctx: SlashCtx): Promise<"exit" | "continue"> {
@@ -526,6 +569,37 @@ async function handleSlashCommand(input: string, session: Session, ctx: SlashCtx
         printSystem(on ? `skill '${arg}' activated` : `skill '${arg}' deactivated`, on ? "green" : "yellow");
       } catch (e) {
         printError(e instanceof Error ? e.message : String(e));
+      }
+      return "continue";
+    }
+    case "mcp": {
+      const arg = rest[0];
+      const list = ctx.mcp.servers();
+      if (list.length === 0) {
+        writeLine(paint.gray("(no MCP servers connected; configure ~/.deepseek-cli/mcp.json or ./.mcp.json)"));
+        return "continue";
+      }
+      if (!arg) {
+        writeLine(paint.gray("mcp servers:"));
+        for (const s of list) {
+          const mark = s.enabled ? paint.green("●") : paint.gray("○");
+          writeLine(`  ${mark} ${pad(s.name, 20)} ${paint.gray(s.toolCount + " tool" + (s.toolCount === 1 ? "" : "s"))}`);
+        }
+        writeLine(paint.gray("\n/mcp <name> toggles a server's tools on/off"));
+        return "continue";
+      }
+      const target = list.find((s) => s.name === arg);
+      if (!target) {
+        printError(`unknown mcp server '${arg}'`);
+        return "continue";
+      }
+      const nowEnabled = ctx.mcp.toggle(arg);
+      if (nowEnabled) {
+        for (const t of ctx.mcp.toolsForServer(arg)) ctx.tools.register(t);
+        printSystem(`mcp '${arg}' enabled (${target.toolCount} tools)`, "green");
+      } else {
+        for (const t of ctx.mcp.toolsForServer(arg)) ctx.tools.unregister(t.name);
+        printSystem(`mcp '${arg}' disabled`, "yellow");
       }
       return "continue";
     }
@@ -618,6 +692,7 @@ function printSlashHelp(): void {
     ["/model [name]", "show or switch models (rebuilds prompt)"],
     ["/new", "start a fresh session, clearing context"],
     ["/skill [name]", "list skills, or toggle a skill on/off"],
+    ["/mcp [name]", "list MCP servers, or toggle a server's tools"],
     ["/tokens", "show token usage (estimate + real)"],
     ["/tools", "list registered tools"],
     ["/system", "show the active system prompt"],

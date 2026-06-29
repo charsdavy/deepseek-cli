@@ -22,6 +22,7 @@ export interface ParsedArgs {
   temperature?: number;
   maxTokens?: number;
   outputFormat?: "text" | "json";
+  noMcp?: boolean;
   verbose?: boolean;
 }
 
@@ -50,6 +51,7 @@ Options:
       --max-tokens <n>                   Max output tokens per response
       --output-format <text|json>        One-shot only: emit a single JSON result
                                          (no streaming/ANSI) for scripting / CI
+      --no-mcp                           Do not load MCP servers this session
       --verbose                          Verbose logging
   -h, --help                             Show this help
   -V, --version                          Print version
@@ -132,6 +134,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
         out.outputFormat = v;
         break;
       }
+      case "--no-mcp":
+        out.noMcp = true;
+        break;
       case "--temperature":
         out.temperature = Number(args[++i]);
         break;
