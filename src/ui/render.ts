@@ -1,18 +1,22 @@
 // Terminal output helpers — markdown rendering, streaming, panels, spinner.
 
-import { combine, paint, symbol } from "./theme.ts";
+import { combine, outputSilent, paint, symbol } from "./theme.ts";
+export { setOutputSilent } from "./theme.ts";
 
 // ---- Low-level IO ----
 
 export function streamWrite(text: string): void {
+  if (outputSilent) return;
   Bun.stdout.write(text);
 }
 
 export function writeLine(text = ""): void {
+  if (outputSilent) return;
   process.stdout.write(text + "\n");
 }
 
 export function blank(): void {
+  if (outputSilent) return;
   writeLine();
 }
 

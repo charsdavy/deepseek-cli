@@ -3,6 +3,7 @@
 
 import { ArgError, parseArgs, printHelp, printVersion } from "./cli.ts";
 import { runAuthCommand } from "./commands/auth.ts";
+import { runInitCommand } from "./commands/init.ts";
 import { runSessionsCommand } from "./commands/sessions.ts";
 import { runConfigCommand } from "./commands/config.ts";
 import { runChat } from "./commands/chat.ts";
@@ -31,6 +32,9 @@ async function main(): Promise<void> {
     case "auth":
       await runAuthCommand();
       return;
+    case "init":
+      await runInitCommand();
+      return;
     case "sessions":
       await runSessionsCommand();
       return;
@@ -52,6 +56,7 @@ async function main(): Promise<void> {
         cwd: args.cwd,
         temperature: args.temperature,
         maxTokens: args.maxTokens,
+        outputFormat: args.outputFormat,
         verbose: args.verbose,
       });
       return;

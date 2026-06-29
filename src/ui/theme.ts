@@ -87,3 +87,13 @@ export const symbol = {
 };
 
 export const enabledColors = enabled;
+
+// ---- Silent mode (for --output-format json / pipe mode) ----
+// When true, every noisy stdout side effect (streaming text, spinner, panels,
+// tool headers, system messages) is suppressed so the program can emit a
+// single structured JSON blob to stdout for scripting / CI consumption.
+export let outputSilent = false;
+
+export function setOutputSilent(v: boolean): void {
+  outputSilent = v;
+}

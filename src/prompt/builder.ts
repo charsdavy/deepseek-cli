@@ -54,9 +54,12 @@ You have the following tools. Pick the most specific one for each job.
   explicitly asks.
 - glob — recursive file pattern matching. Prefer this over \`find\` in bash.
 - grep — content search inside files. Prefer this over \`grep\` in bash.
+- list_dir — quick single-level folder overview. Prefer over \`ls\` in bash.
 - web_fetch — fetch external HTTP(S) URLs.
 - git_diff — read-only structured view of \`git diff\`. Prefer this over
   \`bash git diff\` for inspecting uncommitted or ref-to-ref changes.
+- git_status — read-only structured view of \`git status\` (porcelain + branch).
+  Prefer this over \`bash git status\` for working-tree state.
 - todo_write — use proactively when the task has ≥3 steps; keep exactly one
   item in_progress at a time; update statuses as work progresses.
 

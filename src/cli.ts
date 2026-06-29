@@ -7,7 +7,7 @@ import pkg from "../package.json" with { type: "json" };
 export const VERSION = (pkg as { version?: string }).version ?? "0.3.0";
 
 export interface ParsedArgs {
-  command: "chat" | "auth" | "sessions" | "config" | "help" | "version";
+  command: "chat" | "auth" | "sessions" | "config" | "help" | "version" | "init";
   prompt?: string;
   model?: string;
   system?: string;
@@ -21,6 +21,7 @@ export interface ParsedArgs {
   cwd?: string;
   temperature?: number;
   maxTokens?: number;
+  outputFormat?: "text" | "json";
   verbose?: boolean;
 }
 
@@ -29,6 +30,7 @@ const HELP = `deepseek — an agentic AI coding CLI powered by DeepSeek.
 Usage:
   deepseek [options] [prompt]            Start an interactive session, or run a single prompt
   deepseek auth                          Configure or refresh your DeepSeek API key
+  deepseek init                          Scaffold an AGENTS.md project-instructions file
   deepseek sessions                      List saved sessions
   deepseek config                        Show current configuration
 
@@ -46,6 +48,8 @@ Options:
       --cwd <path>                       Working directory (defaults to $PWD)
       --temperature <n>                  Sampling temperature (default 0.7)
       --max-tokens <n>                   Max output tokens per response
+      --output-format <text|json>        One-shot only: emit a single JSON result
+                                         (no streaming/ANSI) for scripting / CI
       --verbose                          Verbose logging
   -h, --help                             Show this help
   -V, --version                          Print version
@@ -69,6 +73,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case "auth":
       case "sessions":
       case "config":
+      case "init":
         out.command = a;
         return out;
       case "-h":
@@ -119,6 +124,14 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case "--cwd":
         out.cwd = args[++i];
         break;
+      case "--output-format": {
+        const v = args[++i] as string;
+        if (v !== "text" && v !== "json") {
+          throw new ArgError(`--output-format must be text|json, got: ${v}`);
+        }
+        out.outputFormat = v;
+        break;
+      }
       case "--temperature":
         out.temperature = Number(args[++i]);
         break;

@@ -12,6 +12,15 @@ export const CONFIG_DIR = path.join(os.homedir(), ".deepseek-cli");
 export const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 export const SESSION_DIR = path.join(CONFIG_DIR, "sessions");
 
+/**
+ * Resolve the session storage directory. Honors DEEPSEEK_SESSION_DIR so tests
+ * (and power users) can point it at an isolated tmp dir without touching the
+ * real ~/.deepseek-cli/sessions.
+ */
+export function sessionDir(): string {
+  return process.env.DEEPSEEK_SESSION_DIR ?? SESSION_DIR;
+}
+
 export interface CliConfig {
   apiKey?: string;
   defaultModel?: string;
@@ -43,7 +52,7 @@ export async function loadConfig(): Promise<CliConfig> {
     try {
       const raw = await fs.readFile(CONFIG_FILE, "utf-8");
       const parsed = JSON.parse(raw) as Record<string, unknown>;
-      file = { ...DEFAULT_CONFIG, ...parsed };
+      file = { ...DEFAULT_CONFIG, ...normalizeConfig(parsed) };
       // Back-compat: legacy Python CLI stored the key as `api_key` (snake_case)
       if (!file.apiKey && typeof parsed.api_key === "string") {
         file.apiKey = parsed.api_key;
@@ -59,6 +68,50 @@ export async function loadConfig(): Promise<CliConfig> {
   if (envBase) merged.baseUrl = envBase;
   if (envModel) merged.defaultModel = envModel;
   return merged;
+}
+
+/**
+ * Validate + coerce the raw config object. Unknown or malformed fields are
+ * dropped (with a one-line warning) so a corrupted file can't silently feed
+ * bad values into the API client or agent loop.
+ */
+function normalizeConfig(raw: Record<string, unknown>): Partial<CliConfig> {
+  const out: Partial<CliConfig> = {};
+  const dropped: string[] = [];
+
+  if (typeof raw.apiKey === "string") out.apiKey = raw.apiKey;
+  else if (raw.apiKey !== undefined) dropped.push("apiKey");
+
+  if (typeof raw.defaultModel === "string" && raw.defaultModel.length > 0) {
+    out.defaultModel = raw.defaultModel;
+  } else if (raw.defaultModel !== undefined) dropped.push("defaultModel");
+
+  if (typeof raw.temperature === "number" && Number.isFinite(raw.temperature)) {
+    // Clamp to a sane sampling range.
+    out.temperature = Math.max(0, Math.min(2, raw.temperature));
+  } else if (raw.temperature !== undefined) dropped.push("temperature");
+
+  if (typeof raw.maxTokens === "number" && Number.isInteger(raw.maxTokens) && raw.maxTokens > 0) {
+    out.maxTokens = raw.maxTokens;
+  } else if (raw.maxTokens !== undefined) dropped.push("maxTokens");
+
+  if (typeof raw.baseUrl === "string" && /^https?:\/\//i.test(raw.baseUrl)) {
+    out.baseUrl = raw.baseUrl;
+  } else if (raw.baseUrl !== undefined) dropped.push("baseUrl");
+
+  if (typeof raw.approvalMode === "string") {
+    const v = raw.approvalMode;
+    if (v === "ask" || v === "auto" || v === "yolo" || v === "deny-pure-shell") {
+      out.approvalMode = v as CliConfig["approvalMode"];
+    } else {
+      dropped.push("approvalMode");
+    }
+  } else if (raw.approvalMode !== undefined) dropped.push("approvalMode");
+
+  if (dropped.length > 0) {
+    printSystem(`Config: ignoring invalid field(s): ${dropped.join(", ")}`, "yellow");
+  }
+  return out;
 }
 
 export async function saveConfig(cfg: CliConfig): Promise<void> {
