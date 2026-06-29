@@ -27,6 +27,9 @@ export interface ChatArgs {
   continueLast?: boolean;
   resume?: string;
   yolo?: boolean;
+  approvalMode?: "ask" | "auto" | "yolo";
+  maxIterations?: number;
+  baseUrl?: string;
   cwd?: string;
   temperature?: number;
   maxTokens?: number;
@@ -48,6 +51,12 @@ export async function runChat(args: ChatArgs): Promise<void> {
   const reasoning = args.reasoning ?? isReasoningModel(model);
   const temperature = args.temperature ?? cfg.temperature;
   const maxTokens = args.maxTokens ?? cfg.maxTokens;
+  // CLI base-url override wins over config; falls back to config's baseUrl.
+  const baseUrl = args.baseUrl ?? cfg.baseUrl;
+  // Resolve the permission mode. `--yolo` is shorthand for --approval-mode yolo.
+  const approvalMode = args.yolo ? "yolo" : (args.approvalMode ?? cfg.approvalMode ?? "ask");
+  const skipAll = approvalMode === "auto" || approvalMode === "yolo";
+  const maxIterations = args.maxIterations;
 
   // Session resolution
   let session: Session;
@@ -88,42 +97,57 @@ export async function runChat(args: ChatArgs): Promise<void> {
   // Tools + permissions
   const tools = new ToolRegistry();
   const permissions = new PermissionManager({
-    mode: "ask",
-    skipAll: args.yolo === true,
+    mode: skipAll ? "auto" : "ask",
+    skipAll,
   });
 
   const toolCtx: ToolContext = { cwd };
 
+  // Per-turn abort holder. SIGINT aborts the active turn; a second SIGINT with
+  // no active turn force-quits the process.
+  const turnAbort: { current: AbortController | null } = { current: null };
+  let exitFlagged = false;
+  const onSigInt = () => {
+    if (turnAbort.current) {
+      turnAbort.current.abort();
+      return;
+    }
+    if (exitFlagged) {
+      writeLine();
+      process.exit(130);
+    }
+    exitFlagged = true;
+    writeLine(paint.yellow("\n(interrupt — type /exit to quit, or Ctrl-C again to force)"));
+  };
+  process.on("SIGINT", onSigInt);
+
   // ---- One-shot mode ----
   if (args.prompt) {
     session.messages.push({ role: "user", content: args.prompt });
+    const controller = new AbortController();
+    turnAbort.current = controller;
     try {
-      await driveTurn(session, { apiKey, model, reasoning, temperature, maxTokens, tools, permissions, toolCtx });
+      await driveTurn(session, {
+        apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl,
+        tools, permissions, toolCtx, signal: controller.signal,
+      });
       await saveSession(session);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       printError(`turn failed: ${msg}`);
     } finally {
+      turnAbort.current = null;
+      process.off("SIGINT", onSigInt);
       closeReadline();
     }
     return;
   }
 
   // ---- Interactive REPL ----
-  printWelcome(model, reasoning, args.yolo === true);
-  printTip("type /help for commands, /exit to quit, Ctrl-C to abort");
+  printWelcome(model, reasoning, skipAll);
+  if (baseUrl) writeLine(`  ${paint.gray("endpoint:")} ${paint.gray(baseUrl)}`);
+  printTip("type /help for commands, /exit to quit, Ctrl-C to abort a turn");
   blank();
-
-  let aborted = false;
-  const onSigInt = () => {
-    if (aborted) {
-      writeLine();
-      process.exit(130);
-    }
-    aborted = true;
-    writeLine(paint.yellow("\n(interrupt — type /exit to quit)"));
-  };
-  process.on("SIGINT", onSigInt);
 
   try {
     while (true) {
@@ -133,23 +157,55 @@ export async function runChat(args: ChatArgs): Promise<void> {
       } catch {
         break;
       }
-      aborted = false;
+      exitFlagged = false;
       const trimmed = input.trim();
       if (!trimmed) continue;
 
       if (trimmed.startsWith("/")) {
+        const lowerCmd = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase();
+        if (lowerCmd === "retry") {
+          const idx = lastUserIndex(session.messages);
+          if (idx < 0) {
+            printSystem("no previous prompt to retry", "yellow");
+            continue;
+          }
+          // Drop everything after the last user message, then re-run the turn.
+          session.messages.length = idx + 1;
+          const controller = new AbortController();
+          turnAbort.current = controller;
+          try {
+            await driveTurn(session, {
+              apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl,
+              tools, permissions, toolCtx, signal: controller.signal,
+            });
+            await saveSession(session);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            printError(`turn failed: ${msg}`);
+          } finally {
+            turnAbort.current = null;
+          }
+          continue;
+        }
         const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools });
         if (handled === "exit") break;
         continue;
       }
 
       session.messages.push({ role: "user", content: trimmed });
+      const controller = new AbortController();
+      turnAbort.current = controller;
       try {
-        await driveTurn(session, { apiKey, model, reasoning, temperature, maxTokens, tools, permissions, toolCtx });
+        await driveTurn(session, {
+          apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl,
+          tools, permissions, toolCtx, signal: controller.signal,
+        });
         await saveSession(session);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         printError(`turn failed: ${msg}`);
+      } finally {
+        turnAbort.current = null;
       }
     }
   } finally {
@@ -166,9 +222,12 @@ interface TurnDeps {
   reasoning?: boolean;
   temperature?: number;
   maxTokens?: number;
+  maxIterations?: number;
+  baseUrl?: string;
   tools: ToolRegistry;
   permissions: PermissionManager;
   toolCtx: ToolContext;
+  signal?: AbortSignal;
 }
 
 async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
@@ -185,28 +244,65 @@ async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
   };
 
   spinner.start("thinking…");
+  let result;
   try {
-    const result = await runAgentLoop(session.messages, {
+    result = await runAgentLoop(session.messages, {
       apiKey: deps.apiKey,
       model: deps.model,
       reasoning: deps.reasoning,
       temperature: deps.temperature,
       maxTokens: deps.maxTokens,
+      maxIterations: deps.maxIterations,
+      baseUrl: deps.baseUrl,
       tools: deps.tools,
       permissions: deps.permissions,
       cwd: session.cwd,
+      signal: deps.signal,
       onContentDelta: (d) => renderer.onContentDelta(d),
       onReasoningDelta: (d) => renderer.onReasoningDelta(d),
       onToolStart: () => true,
       onToolEnd,
     });
-    renderer.end();
-    session.messages = result.messages;
   } catch (e) {
     spinner.stop();
     renderer.end();
     throw e;
   }
+  spinner.stop();
+  renderer.end();
+  session.messages = result.messages;
+
+  // Track real token usage from the API on the session, if reported.
+  if (result.usage && (result.usage.promptTokens || result.usage.completionTokens)) {
+    session.tokenUsage = accumulateUsage(session.tokenUsage, result.usage);
+  }
+
+  // Surface per-turn usage to the user.
+  if (result.usage && result.usage.totalTokens) {
+    const u = result.usage;
+    writeLine(
+      paint.gray(
+        `  tokens: ${u.promptTokens ?? "?"} prompt → ${u.completionTokens ?? "?"} completion` +
+          ` · session ${session.tokenUsage?.total ?? u.totalTokens} total` +
+          (result.aborted ? " · interrupted" : ""),
+      ),
+    );
+  } else if (result.aborted) {
+    printSystem("turn interrupted", "yellow");
+  }
+}
+
+function accumulateUsage(
+  prev: Session["tokenUsage"],
+  delta: { promptTokens?: number; completionTokens?: number; totalTokens?: number },
+): NonNullable<Session["tokenUsage"]> {
+  const base = prev ?? { prompt: 0, completion: 0, total: 0, turns: 0 };
+  return {
+    prompt: base.prompt + (delta.promptTokens ?? 0),
+    completion: base.completion + (delta.completionTokens ?? 0),
+    total: base.total + (delta.totalTokens ?? 0),
+    turns: base.turns + 1,
+  };
 }
 
 function pickModel(name: string): string {
@@ -273,12 +369,48 @@ async function handleSlashCommand(input: string, session: Session, ctx: SlashCtx
     case "tokens":
     case "size": {
       const t = estimateConversationTokens(session.messages);
-      writeLine(paint.gray(`conversation: ${session.messages.length} messages, ~${t} tokens`));
+      writeLine(paint.gray(`conversation: ${session.messages.length} messages, ~${t} tokens (estimate)`));
+      if (session.tokenUsage) {
+        const u = session.tokenUsage;
+        writeLine(
+          paint.gray(
+            `real usage: ${u.prompt} prompt + ${u.completion} completion = ${u.total} total` +
+              ` over ${u.turns} turn(s)`,
+          ),
+        );
+      }
       return "continue";
     }
     case "save": {
       await saveSession(session);
       printSystem(`saved session ${session.id}`, "green");
+      return "continue";
+    }
+    case "undo": {
+      const idx = lastUserIndex(session.messages);
+      if (idx <= 0) {
+        printSystem("nothing to undo", "yellow");
+        return "continue";
+      }
+      const removed = session.messages.length - idx;
+      session.messages.length = idx;
+      printSystem(`undid last turn (${removed} message(s) removed)`, "yellow");
+      return "continue";
+    }
+    case "export": {
+      const target = rest[0];
+      const md = exportTranscript(session);
+      if (target) {
+        try {
+          const { writeFileSync } = await import("node:fs");
+          writeFileSync(target, md, "utf-8");
+          printSystem(`exported ${session.messages.length} messages to ${target}`, "green");
+        } catch (e) {
+          printError(`failed to write ${target}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      } else {
+        writeLine(md);
+      }
       return "continue";
     }
     case "sessions": {
@@ -320,10 +452,13 @@ function printSlashHelp(): void {
     ["/exit", "exit the session"],
     ["/clear", "wipe conversation history (keep system prompt)"],
     ["/model [name]", "show or switch models"],
-    ["/tokens", "show estimated token usage"],
+    ["/tokens", "show token usage (estimate + real)"],
     ["/tools", "list registered tools"],
     ["/system", "show the active system prompt"],
     ["/save", "save session now"],
+    ["/undo", "drop the last turn (user + reply messages)"],
+    ["/retry", "re-run the last user prompt (drops the previous reply)"],
+    ["/export [path]", "dump the transcript to stdout or a file"],
     ["/sessions", "list recent sessions"],
   ];
   for (const [cmd, desc] of cmds) {
@@ -335,4 +470,31 @@ function printSlashHelp(): void {
 
 function pad(s: string, n: number): string {
   return s.length >= n ? s : s + " ".repeat(n - s.length);
+}
+
+function lastUserIndex(messages: ChatMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") return i;
+  }
+  return -1;
+}
+
+function exportTranscript(session: Session): string {
+  const out: string[] = [];
+  out.push(`# DeepSeek CLI — session ${session.id}`);
+  out.push(`model: ${session.model} · cwd: ${session.cwd} · ${session.createdAt}`);
+  out.push("");
+  for (const m of session.messages) {
+    if (m.role === "system") continue;
+    const who = m.role === "user" ? "You" : m.role === "assistant" ? "DeepSeek" : m.role;
+    const body = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+    out.push(`## ${who}`);
+    out.push(body || "(empty)");
+    out.push("");
+  }
+  if (session.tokenUsage) {
+    const u = session.tokenUsage;
+    out.push(`---\n_tokens: ${u.prompt} prompt + ${u.completion} completion = ${u.total} over ${u.turns} turns_`);
+  }
+  return out.join("\n");
 }

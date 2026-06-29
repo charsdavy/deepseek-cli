@@ -10,6 +10,7 @@ import { globTool } from "./glob.ts";
 import { grepTool } from "./grep.ts";
 import { webFetchTool } from "./web_fetch.ts";
 import { todoWriteTool } from "./todo.ts";
+import { gitDiffTool } from "./git_diff.ts";
 
 const BUILTIN_TOOLS: Tool[] = [
   readFileTool,
@@ -20,6 +21,7 @@ const BUILTIN_TOOLS: Tool[] = [
   grepTool,
   webFetchTool,
   todoWriteTool,
+  gitDiffTool,
 ];
 
 export class ToolRegistry {

@@ -16,6 +16,13 @@ export interface Session {
   cwd: string;
   /** Version of the assembled system prompt — useful for regression analysis. */
   promptVariant?: string;
+  /** Cumulative real token usage reported by the API across turns. */
+  tokenUsage?: {
+    prompt: number;
+    completion: number;
+    total: number;
+    turns: number;
+  };
 }
 
 function sessionPath(id: string): string {
@@ -67,7 +74,11 @@ export async function deleteSession(id: string): Promise<boolean> {
 export function newSessionId(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  // Append a short random suffix so two sessions started in the same second
+  // (e.g. concurrent one-shot invocations) never collide on disk.
+  const suffix = Math.random().toString(36).slice(2, 6);
+  return `${stamp}-${suffix}`;
 }
 
 export function newSession(model: string, systemPrompt?: string, cwd: string = process.cwd()): Session {

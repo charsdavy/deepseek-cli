@@ -15,6 +15,9 @@ export interface ParsedArgs {
   continueLast?: boolean;
   resume?: string;
   yolo?: boolean;
+  approvalMode?: "ask" | "auto" | "yolo";
+  maxIterations?: number;
+  baseUrl?: string;
   cwd?: string;
   temperature?: number;
   maxTokens?: number;
@@ -37,6 +40,9 @@ Options:
   -c, --continue                         Resume the most recent session
       --resume <id>                      Resume a specific session by id
       --yolo                             Skip all permission prompts (auto-approve)
+      --approval-mode <ask|auto|yolo>    Permission mode (ask=prompt, auto/yolo=skip)
+      --max-iterations <n>               Cap agent loop iterations (default 30)
+      --base-url <url>                   Override the API base URL
       --cwd <path>                       Working directory (defaults to $PWD)
       --temperature <n>                  Sampling temperature (default 0.7)
       --max-tokens <n>                   Max output tokens per response
@@ -95,6 +101,20 @@ export function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--yolo":
         out.yolo = true;
+        break;
+      case "--approval-mode": {
+        const v = args[++i] as string;
+        if (v !== "ask" && v !== "auto" && v !== "yolo") {
+          throw new ArgError(`--approval-mode must be ask|auto|yolo, got: ${v}`);
+        }
+        out.approvalMode = v;
+        break;
+      }
+      case "--max-iterations":
+        out.maxIterations = Number(args[++i]);
+        break;
+      case "--base-url":
+        out.baseUrl = args[++i];
         break;
       case "--cwd":
         out.cwd = args[++i];
