@@ -11,10 +11,18 @@ export interface ToolCallAccumulator {
   arguments: string;
 }
 
+export interface TokenUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
 export interface ChatStreamChunk {
   content?: string;
   reasoning?: string;
   toolCalls: ToolCallAccumulator[];
+  /** Populated on the final SSE event that carries `usage`. */
+  usage?: TokenUsage;
 }
 
 export interface ChatMessageContent {
@@ -53,6 +61,8 @@ export interface ChatOptions {
   reasoning?: boolean;
   maxTokens?: number;
   signal?: AbortSignal;
+  /** Override the API base URL (e.g. for self-hosted / proxy). Falls back to models.ts BASE_URL. */
+  baseUrl?: string;
 }
 
 export class DeepSeekError extends Error {
@@ -101,7 +111,7 @@ export async function* streamChatCompletion(
     body.thinking = { type: "enabled" };
   }
 
-  const res = await fetch(`${BASE_URL}/v1/chat/completions`, {
+  const res = await fetch(`${opts.baseUrl ?? BASE_URL}/v1/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -172,9 +182,21 @@ function parseSSEEvent(rawEvent: string): ChatStreamChunk | null {
   try {
     const json = JSON.parse(dataLine);
     const delta = json?.choices?.[0]?.delta;
-    if (!delta) return null;
 
     const out: ChatStreamChunk = { toolCalls: [] };
+
+    // The final SSE event (and sometimes a dedicated `[DONE]`-preceded event)
+    // carries a top-level `usage` object. Capture it regardless of delta presence.
+    if (json?.usage && typeof json.usage === "object") {
+      const u = json.usage as Record<string, unknown>;
+      out.usage = {
+        promptTokens: typeof u.prompt_tokens === "number" ? u.prompt_tokens : undefined,
+        completionTokens: typeof u.completion_tokens === "number" ? u.completion_tokens : undefined,
+        totalTokens: typeof u.total_tokens === "number" ? u.total_tokens : undefined,
+      };
+    }
+
+    if (!delta) return out;
 
     if (typeof delta.content === "string" && delta.content.length > 0) {
       out.content = delta.content;
@@ -192,6 +214,10 @@ function parseSSEEvent(rawEvent: string): ChatStreamChunk | null {
           arguments: tc?.function?.arguments ?? "",
         });
       }
+    }
+    // Skip chunks that carry no actionable payload (keeps the stream quiet).
+    if (!out.content && !out.reasoning && out.toolCalls.length === 0 && !out.usage) {
+      return null;
     }
     return out;
   } catch {

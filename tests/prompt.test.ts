@@ -4,6 +4,7 @@ import {
   PROMPT_VARIANT,
 } from "../src/prompt/builder.ts";
 import type { ModelInfo } from "../src/api/models.ts";
+import { ToolRegistry } from "../src/tools/registry.ts";
 
 const cwd = "/Users/test/project";
 
@@ -89,5 +90,15 @@ describe("buildSystemPrompt", () => {
     // ensure the function doesn't crash and the env block still has cwd.
     const { text } = buildSystemPrompt({ cwd: "/tmp" });
     expect(text).toContain("Working directory: `/tmp`");
+  });
+
+  it("tool block references every built-in tool (drift guard)", () => {
+    const { text } = buildSystemPrompt({ cwd });
+    const registry = new ToolRegistry();
+    for (const tool of registry.list()) {
+      expect(text).toContain(tool.name);
+    }
+    // Specifically the newly added structured git tool.
+    expect(text).toContain("git_diff");
   });
 });

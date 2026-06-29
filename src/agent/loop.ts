@@ -2,7 +2,7 @@
 // executes them (with permission) and feeds results back into the conversation
 // until the model stops calling tools. This is the heart of the agentic CLI.
 
-import type { ChatMessage, ToolDef } from "../api/client.ts";
+import type { ChatMessage, ToolDef, TokenUsage } from "../api/client.ts";
 import { DeepSeekError, DeepSeekUnauthorized, streamChatCompletion, withRetry } from "../api/client.ts";
 import { isReasoningModel } from "../api/models.ts";
 import { estimateConversationTokens } from "../api/tokens.ts";
@@ -25,6 +25,8 @@ export interface AgentOptions {
   permissions: PermissionManager;
   cwd?: string;
   signal?: AbortSignal;
+  /** Override API base URL (self-hosted / proxy). */
+  baseUrl?: string;
   // UI callbacks (kept here so the loop stays decoupled from stdout specifics)
   onContentDelta?: (delta: string) => void;
   onReasoningDelta?: (delta: string) => void;
@@ -36,6 +38,10 @@ export interface AgentRunResult {
   messages: ChatMessage[];
   iterations: number;
   finalText: string;
+  /** Real token usage reported by the API for the last completion (if any). */
+  usage?: TokenUsage;
+  /** True if the run was aborted via the supplied AbortSignal. */
+  aborted?: boolean;
 }
 
 const DEFAULT_MAX_ITERATIONS = 30;
@@ -55,11 +61,17 @@ export async function runAgentLoop(
   let messages = messagesIn;
   let finalText = "";
   let iterations = 0;
+  let lastUsage: TokenUsage | undefined;
 
   const shouldReason = opts.reasoning ?? isReasoningModel(opts.model);
 
   while (iterations < maxIterations) {
     iterations++;
+
+    // Bail out early if the user aborted the turn.
+    if (opts.signal?.aborted) {
+      return { messages, iterations, finalText, usage: lastUsage, aborted: true };
+    }
 
     // Trim context if necessary
     const trimmed = trimToFit(messages);
@@ -85,9 +97,17 @@ export async function runAgentLoop(
         reasoning: shouldReason,
         maxTokens: opts.maxTokens,
         signal: opts.signal,
+        baseUrl: opts.baseUrl,
       });
 
       for await (const chunk of gen) {
+        if (chunk.usage) {
+          lastUsage = {
+            promptTokens: chunk.usage.promptTokens ?? lastUsage?.promptTokens,
+            completionTokens: chunk.usage.completionTokens ?? lastUsage?.completionTokens,
+            totalTokens: chunk.usage.totalTokens ?? lastUsage?.totalTokens,
+          };
+        }
         if (chunk.content) {
           acc.content += chunk.content;
           opts.onContentDelta?.(chunk.content);
@@ -115,6 +135,11 @@ export async function runAgentLoop(
       if (e instanceof DeepSeekUnauthorized) {
         printError(`${e.message} Run \`deepseek auth\` to reconfigure.`);
         throw e;
+      }
+      // An AbortError means the user interrupted the stream — stop cleanly.
+      if (opts.signal?.aborted || (e instanceof Error && e.name === "AbortError")) {
+        printSystem("interrupted", "yellow");
+        return { messages, iterations, finalText, usage: lastUsage, aborted: true };
       }
       const msg = e instanceof Error ? e.message : String(e);
       printError(`API error: ${msg}`);
@@ -145,48 +170,52 @@ export async function runAgentLoop(
 
     if (acc.toolCalls.length === 0) {
       // No more tool calls — model finished its turn.
-      return { messages, iterations, finalText };
+      return { messages, iterations, finalText, usage: lastUsage };
     }
 
-    // Execute tool calls sequentially (parallel could be added later).
+    // Collect permission decisions sequentially (keeps the y/n prompts sane),
+    // then execute the approved calls in parallel. Denied/aborted/unknown tools
+    // get their tool-message pushed immediately so their slots stay ordered.
+    interface PendingTask {
+      id: string;
+      name: string;
+      args: Record<string, unknown>;
+    }
+    const pending: PendingTask[] = [];
+
     for (const tc of acc.toolCalls) {
       const args = safeParseArgs(tc.arguments);
 
-      // UI hook
       let proceed = true;
       if (opts.onToolStart) {
         proceed = await opts.onToolStart(tc.name, args);
       }
       if (!proceed) {
-        messages.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: "User aborted this tool call.",
-        });
+        messages.push({ role: "tool", tool_call_id: tc.id, content: "User aborted this tool call." });
         continue;
       }
 
-      // Permission check & execute
       const tool = tools.get(tc.name);
       if (!tool) {
-        messages.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: `Tool '${tc.name}' is not registered.`,
-        });
+        messages.push({ role: "tool", tool_call_id: tc.id, content: `Tool '${tc.name}' is not registered.` });
         continue;
       }
 
       const decision = await opts.permissions.check(tool, args);
       if (!decision.allow) {
         printSystem(`denied: ${tc.name}`, "yellow");
-        messages.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: "User denied this operation.",
-        });
+        messages.push({ role: "tool", tool_call_id: tc.id, content: "User denied this operation." });
         continue;
       }
+
+      pending.push({ id: tc.id, name: tc.name, args });
+    }
+
+    if (pending.length > 0) {
+      // Announce all approved calls up front, then run them concurrently.
+      for (const p of pending) printToolHeader(p.name, summarizeArgs(p.args));
+      const label = pending.length === 1 ? "running tool…" : `running ${pending.length} tools in parallel…`;
+      spinner.start(label);
 
       const ctx: ToolContext = {
         cwd: opts.cwd ?? process.cwd(),
@@ -194,17 +223,20 @@ export async function runAgentLoop(
         state: toolSharedState,
       };
 
-      printToolHeader(tc.name, summarizeArgs(args));
-      const result = await tools.execute(tc.name, args, ctx);
-      opts.onToolEnd?.(tc.name, result);
+      const results = await Promise.all(
+        pending.map(async (p) => {
+          const r = await tools.execute(p.name, p.args, ctx);
+          return { id: p.id, name: p.name, result: r };
+        }),
+      );
       spinner.stop();
 
-      const payload = result.content ?? "";
-      messages.push({
-        role: "tool",
-        tool_call_id: tc.id,
-        content: payload,
-      });
+      // Push tool messages in original order for the model.
+      for (const r of results) {
+        opts.onToolEnd?.(r.name, r.result);
+        const payload = capToolResult(r.result.content ?? "", r.name);
+        messages.push({ role: "tool", tool_call_id: r.id, content: payload });
+      }
     }
   }
 
@@ -212,7 +244,7 @@ export async function runAgentLoop(
     printSystem(`max iterations (${maxIterations}) reached — stopping agent.`, "yellow");
   }
 
-  return { messages, iterations, finalText };
+  return { messages, iterations, finalText, usage: lastUsage };
 }
 
 // In-memory store shared across tools (todos, etc.)
@@ -242,6 +274,21 @@ function shortStr(s: string): string {
   const m = 80;
   if (s.length <= m) return s;
   return s.slice(0, m - 1) + "…";
+}
+
+// Hard backstop: cap any single tool result fed back to the model. Individual
+// tools already self-truncate, but this guarantees one giant output can never
+// blow the context budget on its own. ~25K chars ≈ 6K tokens leaves plenty of
+// room for the rest of the conversation.
+const MAX_TOOL_RESULT_CHARS = 25_000;
+
+function capToolResult(content: string, toolName: string): string {
+  if (content.length <= MAX_TOOL_RESULT_CHARS) return content;
+  const head = content.slice(0, MAX_TOOL_RESULT_CHARS);
+  return (
+    head +
+    `\n\n…(output truncated at ${MAX_TOOL_RESULT_CHARS} chars; ${content.length - MAX_TOOL_RESULT_CHARS} more omitted from ${toolName})`
+  );
 }
 
 // Streaming render helper for the chat command — wraps the loop with stdout.
