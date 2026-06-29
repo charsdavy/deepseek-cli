@@ -12,6 +12,7 @@
 
 import { execSync } from "node:child_process";
 import type { ModelInfo } from "../api/models.ts";
+import type { ActiveSkill } from "../skills/store.ts";
 
 export const PROMPT_VARIANT = "v1";
 
@@ -25,6 +26,8 @@ export interface BuildPromptOptions {
   userSystemPrompt?: string;
   /** Project-level AGENTS.md / deepseek.md / .cursorrules content. */
   projectInstructions?: string | null;
+  /** Skills the user activated via /skill — folded in before project rules. */
+  activeSkills?: ActiveSkill[];
 }
 
 export interface BuiltPrompt {
@@ -157,6 +160,19 @@ export function buildSystemPrompt(opts: BuildPromptOptions): BuiltPrompt {
   ];
 
   if (isReasoning) blocks.push(REASONING_ADDENDUM);
+
+  // Active skills: specialized instructions chosen by the user via /skill.
+  // Placed after the built-in blocks (incl. reasoning) but before project
+  // instructions so repo rules still win on conflicts.
+  if (opts.activeSkills && opts.activeSkills.length > 0) {
+    const body = opts.activeSkills
+      .map((s) => `### skill: ${s.name}\n${s.content.trim()}`)
+      .join("\n\n");
+    blocks.push(
+      "## Active skills\nThe following skills are enabled. Follow their specialized instructions when relevant to the current task.\n" +
+        body,
+    );
+  }
 
   // Project-level instructions (AGENTS.md etc.) ALWAYS come after the
   // built-in blocks and are explicitly marked as overriding them.

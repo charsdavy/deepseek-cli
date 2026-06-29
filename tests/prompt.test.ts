@@ -101,4 +101,23 @@ describe("buildSystemPrompt", () => {
     // Specifically the newly added structured git tool.
     expect(text).toContain("git_diff");
   });
+
+  it("injects active skills before project instructions", () => {
+    const { blocks, text } = buildSystemPrompt({
+      cwd,
+      activeSkills: [{ name: "tdd", content: "Always write the test first." }],
+      projectInstructions: "Banned: lodash",
+    });
+    const skillIdx = blocks.findIndex((b) => b.startsWith("## Active skills"));
+    const projectIdx = blocks.findIndex((b) => b.startsWith("## Project instructions"));
+    expect(skillIdx).toBeGreaterThan(-1);
+    expect(projectIdx).toBeGreaterThan(skillIdx);
+    expect(text).toContain("### skill: tdd");
+    expect(text).toContain("Always write the test first.");
+  });
+
+  it("omits the skills block when no skills are active", () => {
+    const { text } = buildSystemPrompt({ cwd });
+    expect(text).not.toContain("## Active skills");
+  });
 });
