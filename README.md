@@ -15,6 +15,7 @@ The CLI pairs streaming chat completions with **tool calling** — the model can
 - **Agentic tool loop** — model drives the work: read → edit → bash → grep until the task is done.
 - **Streaming** chat with reasoning trace support (`deepseek-reasoner`).
 - **11 built-in tools**: `read_file`, `write_file`, `edit_file`, `bash`, `glob`, `grep`, `web_fetch`, `git_diff`, `git_status`, `list_dir`, `todo_write`.
+- **Skills** — load specialized instruction packs into the system prompt; pick which are active with `/skill`.
 - **Parallel tool execution** — multiple independent tool calls in one turn run concurrently.
 - **Permission system** — dangerous tools (writes, shell) ask for `y/n` approval; `--yolo` / `--approval-mode` skip prompts.
 - **Interruptible** — Ctrl-C aborts the in-flight turn cleanly (a second Ctrl-C force-quits).
@@ -70,8 +71,10 @@ deepseek config                                 # show merged config
 | `/help`          | Show available commands                                  |
 | `/exit`          | Quit the session                                         |
 | `/clear`         | Wipe conversation history (system prompt retained)      |
-| `/model [id]`    | Show or switch the active model                          |
-| `/tokens`        | Show token usage (estimate + real API totals)           |
+| `/model [name]`  | Show or switch the active model (rebuilds the prompt)   |
+| `/new`           | Start a fresh session — clears context, new id         |
+| `/skill [name]`  | List skills, or toggle a skill on/off                  |
+| `/tokens`        | Show token usage (estimate + real API totals)          |
 | `/tools`         | List registered tools                                    |
 | `/system`        | Show the active system prompt                            |
 | `/save`          | Save the session immediately                             |
@@ -123,6 +126,34 @@ Drop one of these into your repo root and the agent will fold its contents into 
 - `CLAUDE.md`
 - `.cursorrules`
 
+### Skills
+
+Skills are reusable instruction packs (markdown files) that specialize the agent for a task domain. When a skill is **active**, its contents are appended to the system prompt before your project instructions (so repo rules still win). Activate them per-session with the `/skill` command.
+
+Skill files are discovered from two locations:
+
+| Location                                  | Scope           |
+| ----------------------------------------- | --------------- |
+| `~/.deepseek-cli/skills/<name>.md`        | global (user)   |
+| `<repo>/.deepseek/skills/<name>.md`       | project-specific |
+
+```bash
+# create a global skill
+mkdir -p ~/.deepseek-cli/skills
+cat > ~/.deepseek-cli/skills/tdd.md <<'EOF'
+When implementing a feature: write a failing test first, run it, then implement
+until green. Never claim a task is done without a green test run.
+EOF
+
+# then inside the REPL
+/skill            # list skills and show active state (● = active)
+/skill tdd        # toggle the `tdd` skill on
+/skill tdd        # ...and off
+/skill clear      # deactivate all skills
+```
+
+> `deepseek init` scaffolds an `AGENTS.md` template (repo-level instructions); skills are the per-session, toggleable complement.
+
 ## Architecture
 
 ```
@@ -158,7 +189,9 @@ src/
 │   ├── input.ts          # masked password, multi-line, y/n prompts
 │   └── spinner.ts        # interval-based animated spinner
 ├── session/
-│   └── store.ts          # session save / load / list / delete
+│   └── store.ts          # session save / load / list / delete / search / prune
+├── skills/
+│   └── store.ts          # skill discovery + reading (global + project .md files)
 ├── config/
 │   ├── config.ts         # layered config + auth flow
 │   └── instructions.ts   # AGENTS.md / .cursorrules loader
@@ -186,7 +219,7 @@ bun run build            # compile single binary to ./dist/deepseek
 
 Releases are automated through GitHub Actions (`.github/workflows/release.yml`):
 
-1. Tag a release — `git tag v0.3.1 && git push origin v0.3.1`.
+1. Tag a release — `git tag v0.3.2 && git push origin v0.3.2`.
 2. The workflow cross-compiles four binaries (`darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`) using `bun build --compile --target=bun-<os>-<arch>`.
 3. Each binary is gzipped-tarred (containing just `deepseek`) and uploaded to a GitHub Release.
 4. The same workflow regenerates `Formula/deepseek.rb` in the [`charsdavy/homebrew-tap`](https://github.com/charsdavy/homebrew-tap) repo with fresh SHA256s and pushes the commit.

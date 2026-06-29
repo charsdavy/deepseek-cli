@@ -13,7 +13,8 @@ import { makeStreamRenderer, runAgentLoop } from "../agent/loop.ts";
 import { PermissionManager } from "../agent/permissions.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import type { ToolContext, ToolResult } from "../tools/types.ts";
-import { newSession, loadSession, listSessions, searchSessions, saveSession, type Session } from "../session/store.ts";
+import { newSession, newSessionId, loadSession, listSessions, searchSessions, saveSession, type Session } from "../session/store.ts";
+import { listSkills, readSkill } from "../skills/store.ts";
 import { paint, symbol } from "../ui/theme.ts";
 import { blank, printError, printSystem, printTip, setOutputSilent, writeLine } from "../ui/render.ts";
 import { askMultiline, closeReadline } from "../ui/input.ts";
@@ -47,9 +48,9 @@ export async function runChat(args: ChatArgs): Promise<void> {
   }
 
   const cwd = args.cwd ? path.resolve(args.cwd) : process.cwd();
-  const model = pickModel(args.model ?? cfg.defaultModel ?? DEFAULT_MODEL);
-  const modelInfo = findModel(model);
-  const reasoning = args.reasoning ?? isReasoningModel(model);
+  let model = pickModel(args.model ?? cfg.defaultModel ?? DEFAULT_MODEL);
+  let modelInfo = findModel(model);
+  let reasoning = args.reasoning ?? isReasoningModel(model);
   const temperature = args.temperature ?? cfg.temperature;
   const maxTokens = args.maxTokens ?? cfg.maxTokens;
   // CLI base-url override wins over config; falls back to config's baseUrl.
@@ -82,18 +83,57 @@ export async function runChat(args: ChatArgs): Promise<void> {
 
   // System prompt assembly — modular builder, project instructions win.
   const instructions = await loadProjectInstructions(cwd);
-  const built = buildSystemPrompt({
-    cwd,
-    modelInfo,
-    isReasoning: reasoning,
-    userSystemPrompt: args.system,
-    projectInstructions: instructions,
-  });
-  session.promptVariant = built.variant;
-  const systemPromptText = built.text;
+  // Active skills: name → content, toggled via /skill. Folded into the prompt
+  // before project instructions so repo rules still win on conflicts.
+  let activeSkills = new Map<string, string>();
 
-  // Ensure messages have the system prompt prepended
-  ensureSystemPrefix(session.messages, systemPromptText);
+  const rebuildSystemPrompt = (): void => {
+    const rebuilt = buildSystemPrompt({
+      cwd,
+      modelInfo,
+      isReasoning: reasoning,
+      userSystemPrompt: args.system,
+      projectInstructions: instructions,
+      activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
+    });
+    session.promptVariant = rebuilt.variant;
+    ensureSystemPrefix(session.messages, rebuilt.text);
+  };
+  rebuildSystemPrompt();
+
+  // Switch the active model mid-session: updates the closure vars that
+  // subsequent turns read, and rebuilds the system prompt so the reasoning
+  // addendum reflects the new model. Used by the /model slash command.
+  const applyModel = (id: string): void => {
+    model = id;
+    session.model = id;
+    modelInfo = findModel(id);
+    reasoning = isReasoningModel(id);
+    rebuildSystemPrompt();
+  };
+
+  // Skills API handed to the /skill slash command — encapsulates discovery,
+  // activation, and prompt rebuild so the handler stays self-contained.
+  const skillsApi = {
+    list: () => listSkills(cwd),
+    active: () => [...activeSkills.keys()],
+    toggle: async (name: string): Promise<boolean> => {
+      if (activeSkills.has(name)) {
+        activeSkills.delete(name);
+        rebuildSystemPrompt();
+        return false; // now inactive
+      }
+      const s = await readSkill(name, cwd);
+      if (!s) throw new Error(`skill '${name}' not found`);
+      activeSkills.set(name, s.content);
+      rebuildSystemPrompt();
+      return true; // now active
+    },
+    clear: () => {
+      activeSkills = new Map();
+      rebuildSystemPrompt();
+    },
+  };
 
   // Tools + permissions
   const tools = new ToolRegistry();
@@ -199,7 +239,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
           }
           continue;
         }
-        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools });
+        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi });
         if (handled === "exit") break;
         continue;
       }
@@ -399,6 +439,16 @@ interface SlashCtx {
   model: string;
   temperature?: number;
   tools: ToolRegistry;
+  setModel: (id: string) => void;
+  skills: SkillsApi;
+}
+
+/** Skills API handed to the slash handler (built in runChat). */
+interface SkillsApi {
+  list: () => Promise<import("../skills/store.ts").SkillEntry[]>;
+  active: () => string[];
+  toggle: (name: string) => Promise<boolean>;
+  clear: () => void;
 }
 
 async function handleSlashCommand(input: string, session: Session, ctx: SlashCtx): Promise<"exit" | "continue"> {
@@ -431,8 +481,52 @@ async function handleSlashCommand(input: string, session: Session, ctx: SlashCtx
         printError(`unknown model '${target}'`);
         return "continue";
       }
-      session.model = target;
-      printSystem(`switched model to ${target}`, "green");
+      ctx.setModel(target);
+      const note = isReasoningModel(target) ? " (reasoning on)" : "";
+      printSystem(`switched model to ${target}${note}`, "green");
+      return "continue";
+    }
+    case "new": {
+      // Start a fresh session: new id, cleared context, kept model/cwd.
+      const oldId = session.id;
+      session.id = newSessionId();
+      session.createdAt = new Date().toISOString();
+      session.updatedAt = session.createdAt;
+      session.messages = session.messages.filter((m) => m.role === "system");
+      session.tokenUsage = undefined;
+      printSystem(`${symbol.trash} new session started (was ${oldId}) — context cleared`, "yellow");
+      return "continue";
+    }
+    case "skill": {
+      const arg = rest[0];
+      if (!arg) {
+        // List all skills, marking active ones.
+        const entries = await ctx.skills.list();
+        const active = new Set(ctx.skills.active());
+        if (entries.length === 0) {
+          writeLine(paint.gray("(no skills found)"));
+          writeLine(paint.gray("create one at ~/.deepseek-cli/skills/<name>.md or ./.deepseek/skills/<name>.md"));
+          return "continue";
+        }
+        writeLine(paint.gray("available skills:"));
+        for (const e of entries) {
+          const mark = active.has(e.name) ? paint.green("●") : paint.gray("○");
+          writeLine(`  ${mark} ${pad(e.name, 20)} ${paint.gray(`[${e.source}]`)}`);
+        }
+        writeLine(paint.gray("\n/skill <name> toggles · /skill clear deactivates all"));
+        return "continue";
+      }
+      if (arg === "clear" || arg === "off") {
+        ctx.skills.clear();
+        printSystem("all skills deactivated", "yellow");
+        return "continue";
+      }
+      try {
+        const on = await ctx.skills.toggle(arg);
+        printSystem(on ? `skill '${arg}' activated` : `skill '${arg}' deactivated`, on ? "green" : "yellow");
+      } catch (e) {
+        printError(e instanceof Error ? e.message : String(e));
+      }
       return "continue";
     }
     case "tokens":
@@ -521,7 +615,9 @@ function printSlashHelp(): void {
     ["/help", "show this help"],
     ["/exit", "exit the session"],
     ["/clear", "wipe conversation history (keep system prompt)"],
-    ["/model [name]", "show or switch models"],
+    ["/model [name]", "show or switch models (rebuilds prompt)"],
+    ["/new", "start a fresh session, clearing context"],
+    ["/skill [name]", "list skills, or toggle a skill on/off"],
     ["/tokens", "show token usage (estimate + real)"],
     ["/tools", "list registered tools"],
     ["/system", "show the active system prompt"],
