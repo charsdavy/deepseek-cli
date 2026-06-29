@@ -1,0 +1,7 @@
+[install]
+exact = true
+production = false
+auto = "fallback"
+
+[test]
+root = "./tests"
