@@ -14,12 +14,15 @@ The CLI pairs streaming chat completions with **tool calling** — the model can
 
 - **Agentic tool loop** — model drives the work: read → edit → bash → grep until the task is done.
 - **Streaming** chat with reasoning trace support (`deepseek-reasoner`).
-- **8 built-in tools**: `read_file`, `write_file`, `edit_file`, `bash`, `glob`, `grep`, `web_fetch`, `todo_write`.
-- **Permission system** — dangerous tools (writes, shell) ask for `y/n` approval; `--yolo` skips all prompts.
+- **9 built-in tools**: `read_file`, `write_file`, `edit_file`, `bash`, `glob`, `grep`, `web_fetch`, `git_diff`, `todo_write`.
+- **Parallel tool execution** — multiple independent tool calls in one turn run concurrently.
+- **Permission system** — dangerous tools (writes, shell) ask for `y/n` approval; `--yolo` / `--approval-mode` skip prompts.
+- **Interruptible** — Ctrl-C aborts the in-flight turn cleanly (a second Ctrl-C force-quits).
+- **Real token usage** — per-turn + cumulative session token totals captured from the API and shown via `/tokens`.
 - **Session persistence** — every interactive turn is auto-saved to `~/.deepseek-cli/sessions/`; resume with `-c` or `--resume <id>`.
-- **Context window management** — old turns are auto-trimmed to fit the model budget.
+- **Context window management** — old turns are auto-trimmed, and oversized tool results are capped to fit the model budget.
 - **Project instructions** — automatically loads `AGENTS.md` / `deepseek.md` / `.cursorrules` into the system prompt.
-- **Zero runtime deps** beyond OpenAI-compatible SDK scaffolding (implemented as raw `fetch` + SSE); single binary ships ~60 MB.
+- **Truly zero runtime deps** — API client is raw `fetch` + SSE; single binary ships ~60 MB.
 - **Zero-dependency terminal UI** — ANSI colors, fenced code blocks, box-drawing panels, masked password input.
 
 ## Install
@@ -50,6 +53,9 @@ deepseek                                        # interactive REPL
 deepseek "look at src/ and summarize the architecture"
 deepseek -m deepseek-reasoner "prove that 7 is prime"
 deepseek --yolo "fix the failing tests"         # auto-approve tool calls
+deepseek --approval-mode auto "reformat src/"  # same as --yolo, explicit
+deepseek --max-iterations 50 "long refactor"    # raise the agent loop cap
+deepseek --base-url https://proxy.example.com "task"  # self-hosted / proxy endpoint
 deepseek -c                                     # resume last session
 deepseek sessions                               # list saved sessions
 deepseek config                                 # show merged config
@@ -57,17 +63,20 @@ deepseek config                                 # show merged config
 
 ## Slash commands (interactive mode)
 
-| Command        | Description                                              |
-| -------------- | -------------------------------------------------------- |
-| `/help`        | Show available commands                                  |
-| `/exit`        | Quit the session                                         |
-| `/clear`       | Wipe conversation history (system prompt retained)      |
-| `/model [id]`  | Show or switch the active model                          |
-| `/tokens`      | Show estimated token usage of the conversation          |
-| `/tools`       | List registered tools                                    |
-| `/system`      | Show the active system prompt                            |
-| `/save`        | Save the session immediately                             |
-| `/sessions`    | List recent sessions                                     |
+| Command          | Description                                              |
+| ---------------- | -------------------------------------------------------- |
+| `/help`          | Show available commands                                  |
+| `/exit`          | Quit the session                                         |
+| `/clear`         | Wipe conversation history (system prompt retained)      |
+| `/model [id]`    | Show or switch the active model                          |
+| `/tokens`        | Show token usage (estimate + real API totals)           |
+| `/tools`         | List registered tools                                    |
+| `/system`        | Show the active system prompt                            |
+| `/save`          | Save the session immediately                             |
+| `/undo`          | Drop the last turn (user + reply messages)              |
+| `/retry`         | Re-run the last user prompt (drops the previous reply)  |
+| `/export [path]` | Dump the transcript to stdout, or to a file             |
+| `/sessions`      | List recent sessions                                     |
 
 **Multi-line input**: end a line with `\` for continuation, or wrap a block in triple-backticks (```…```) to submit a multi-line paste.
 
@@ -80,6 +89,25 @@ Configuration is read from `~/.deepseek-cli/config.json` (file mode `0600`). Env
 | `DEEPSEEK_API_KEY`   | API key (preferred over the file)         |
 | `DEEPSEEK_BASE_URL`  | Override the API base URL                 |
 | `DEEPSEEK_MODEL`     | Default model id                          |
+
+### CLI flags
+
+| Flag                              | Purpose                                                            |
+| --------------------------------- | ------------------------------------------------------------------ |
+| `-m, --model <name>`              | Model id (default `deepseek-chat`)                                 |
+| `-s, --system <text>`             | Override the system prompt                                         |
+| `-r, --reasoning`                 | Force reasoning mode                                               |
+| `-c, --continue`                  | Resume the most recent session                                     |
+| `--resume <id>`                   | Resume a specific session by id                                    |
+| `--yolo`                          | Skip all permission prompts (shorthand for `--approval-mode yolo`) |
+| `--approval-mode <ask\|auto\|yolo>` | Permission mode: `ask` prompts; `auto`/`yolo` skip prompts       |
+| `--max-iterations <n>`            | Cap the agent loop iterations (default 30)                         |
+| `--base-url <url>`                | Override the API base URL (wins over config/env)                   |
+| `--cwd <path>`                    | Working directory (defaults to `$PWD`)                             |
+| `--temperature <n>`               | Sampling temperature (default 0.7)                                 |
+| `--max-tokens <n>`                | Max output tokens per response                                     |
+
+> During a turn, **Ctrl-C** aborts the in-flight request cleanly; a second Ctrl-C force-quits.
 
 ### Project-level instructions
 
@@ -115,6 +143,7 @@ src/
 │   ├── glob.ts           # Bun.Glob-backed fast matcher
 │   ├── grep.ts           # ripgrep with Node fallback
 │   ├── web_fetch.ts      # URL fetch with HTML → Markdown conversion
+│   ├── git_diff.ts       # read-only structured `git diff` (staged/ref-to-ref/stat)
 │   └── todo.ts           # in-memory task list the agent can read/update
 ├── ui/
 │   ├── theme.ts          # ANSI color helpers, zero dep
@@ -138,7 +167,9 @@ src/
 ```bash
 bun install
 bun run typecheck        # tsc --noEmit
+bun run lint            # static-analysis gate (tsc)
 bun test                 # bun test runner
+bun run coverage        # tests with coverage report
 bun run dev              # watch mode for development
 bun run build            # compile single binary to ./dist/deepseek
 ```
@@ -147,7 +178,7 @@ bun run build            # compile single binary to ./dist/deepseek
 
 Releases are automated through GitHub Actions (`.github/workflows/release.yml`):
 
-1. Tag a release — `git tag v0.3.0 && git push origin v0.3.0`.
+1. Tag a release — `git tag v0.3.1 && git push origin v0.3.1`.
 2. The workflow cross-compiles four binaries (`darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`) using `bun build --compile --target=bun-<os>-<arch>`.
 3. Each binary is gzipped-tarred (containing just `deepseek`) and uploaded to a GitHub Release.
 4. The same workflow regenerates `Formula/deepseek.rb` in the [`charsdavy/homebrew-tap`](https://github.com/charsdavy/homebrew-tap) repo with fresh SHA256s and pushes the commit.
