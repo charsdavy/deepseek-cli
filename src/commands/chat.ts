@@ -13,9 +13,9 @@ import { makeStreamRenderer, runAgentLoop } from "../agent/loop.ts";
 import { PermissionManager } from "../agent/permissions.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import type { ToolContext, ToolResult } from "../tools/types.ts";
-import { newSession, loadSession, listSessions, saveSession, type Session } from "../session/store.ts";
+import { newSession, loadSession, listSessions, searchSessions, saveSession, type Session } from "../session/store.ts";
 import { paint, symbol } from "../ui/theme.ts";
-import { blank, printError, printSystem, printTip, writeLine } from "../ui/render.ts";
+import { blank, printError, printSystem, printTip, setOutputSilent, writeLine } from "../ui/render.ts";
 import { askMultiline, closeReadline } from "../ui/input.ts";
 import { spinner } from "../ui/spinner.ts";
 
@@ -33,6 +33,7 @@ export interface ChatArgs {
   cwd?: string;
   temperature?: number;
   maxTokens?: number;
+  outputFormat?: "text" | "json";
   verbose?: boolean;
 }
 
@@ -127,14 +128,25 @@ export async function runChat(args: ChatArgs): Promise<void> {
     const controller = new AbortController();
     turnAbort.current = controller;
     try {
-      await driveTurn(session, {
-        apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl,
-        tools, permissions, toolCtx, signal: controller.signal,
-      });
+      if (args.outputFormat === "json") {
+        await runJsonOneShot(session, {
+          apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl,
+          tools, permissions, toolCtx, prompt: args.prompt, signal: controller.signal,
+        });
+      } else {
+        await driveTurn(session, {
+          apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl,
+          tools, permissions, toolCtx, signal: controller.signal,
+        });
+      }
       await saveSession(session);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      printError(`turn failed: ${msg}`);
+      if (args.outputFormat === "json") {
+        process.stdout.write(JSON.stringify({ ok: false, error: msg, prompt: args.prompt }) + "\n");
+      } else {
+        printError(`turn failed: ${msg}`);
+      }
     } finally {
       turnAbort.current = null;
       process.off("SIGINT", onSigInt);
@@ -305,6 +317,63 @@ function accumulateUsage(
   };
 }
 
+// ---- JSON pipe mode ----
+// Runs the agent loop with all stdout side effects suppressed, then prints a
+// single structured JSON result. Designed for scripting / CI consumption:
+//   deepseek --output-format json --yolo "summarize src/"
+interface JsonOneShotDeps {
+  apiKey: string;
+  model: string;
+  reasoning?: boolean;
+  temperature?: number;
+  maxTokens?: number;
+  maxIterations?: number;
+  baseUrl?: string;
+  tools: ToolRegistry;
+  permissions: PermissionManager;
+  toolCtx: ToolContext;
+  prompt: string;
+  signal?: AbortSignal;
+}
+
+export async function runJsonOneShot(session: Session, deps: JsonOneShotDeps): Promise<void> {
+  setOutputSilent(true);
+  let result;
+  try {
+    result = await runAgentLoop(session.messages, {
+      apiKey: deps.apiKey,
+      model: deps.model,
+      reasoning: deps.reasoning,
+      temperature: deps.temperature,
+      maxTokens: deps.maxTokens,
+      maxIterations: deps.maxIterations,
+      baseUrl: deps.baseUrl,
+      tools: deps.tools,
+      permissions: deps.permissions,
+      cwd: session.cwd,
+      signal: deps.signal,
+      // No streaming callbacks in JSON mode — we only emit the final blob.
+    });
+  } finally {
+    setOutputSilent(false);
+  }
+  session.messages = result.messages;
+  if (result.usage && (result.usage.promptTokens || result.usage.completionTokens)) {
+    session.tokenUsage = accumulateUsage(session.tokenUsage, result.usage);
+  }
+  const payload = {
+    ok: !result.aborted,
+    aborted: result.aborted ?? false,
+    model: deps.model,
+    prompt: deps.prompt,
+    finalText: result.finalText,
+    iterations: result.iterations,
+    messageCount: result.messages.length,
+    usage: result.usage ?? null,
+  };
+  process.stdout.write(JSON.stringify(payload) + "\n");
+}
+
 function pickModel(name: string): string {
   if (findModel(name)) return name;
   printSystem(`Unknown model '${name}' — defaulting to ${DEFAULT_MODEL}`, "yellow");
@@ -414,9 +483,10 @@ async function handleSlashCommand(input: string, session: Session, ctx: SlashCtx
       return "continue";
     }
     case "sessions": {
-      const list = await listSessions(10);
+      const query = rest.join(" ").trim();
+      const list = query ? await searchSessions(query, 10) : await listSessions(10);
       if (list.length === 0) {
-        writeLine(paint.gray("(no saved sessions)"));
+        writeLine(paint.gray(query ? `(no sessions matching "${query}")` : "(no saved sessions)"));
       } else {
         for (const s of list) writeLine(`${paint.cyan(s.id)}  ${paint.gray(s.updatedAt)}  ${s.messages.length} msgs`);
       }
@@ -459,7 +529,7 @@ function printSlashHelp(): void {
     ["/undo", "drop the last turn (user + reply messages)"],
     ["/retry", "re-run the last user prompt (drops the previous reply)"],
     ["/export [path]", "dump the transcript to stdout or a file"],
-    ["/sessions", "list recent sessions"],
+    ["/sessions [query]", "list recent sessions (or search by keyword)"],
   ];
   for (const [cmd, desc] of cmds) {
     writeLine(`  ${paint.cyan(pad(cmd, 18))} ${paint.gray(desc)}`);

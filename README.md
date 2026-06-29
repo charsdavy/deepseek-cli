@@ -14,7 +14,7 @@ The CLI pairs streaming chat completions with **tool calling** — the model can
 
 - **Agentic tool loop** — model drives the work: read → edit → bash → grep until the task is done.
 - **Streaming** chat with reasoning trace support (`deepseek-reasoner`).
-- **9 built-in tools**: `read_file`, `write_file`, `edit_file`, `bash`, `glob`, `grep`, `web_fetch`, `git_diff`, `todo_write`.
+- **11 built-in tools**: `read_file`, `write_file`, `edit_file`, `bash`, `glob`, `grep`, `web_fetch`, `git_diff`, `git_status`, `list_dir`, `todo_write`.
 - **Parallel tool execution** — multiple independent tool calls in one turn run concurrently.
 - **Permission system** — dangerous tools (writes, shell) ask for `y/n` approval; `--yolo` / `--approval-mode` skip prompts.
 - **Interruptible** — Ctrl-C aborts the in-flight turn cleanly (a second Ctrl-C force-quits).
@@ -56,6 +56,8 @@ deepseek --yolo "fix the failing tests"         # auto-approve tool calls
 deepseek --approval-mode auto "reformat src/"  # same as --yolo, explicit
 deepseek --max-iterations 50 "long refactor"    # raise the agent loop cap
 deepseek --base-url https://proxy.example.com "task"  # self-hosted / proxy endpoint
+deepseek --output-format json --yolo "summarize src/" # machine-readable result for CI
+deepseek init                                   # scaffold an AGENTS.md template
 deepseek -c                                     # resume last session
 deepseek sessions                               # list saved sessions
 deepseek config                                 # show merged config
@@ -76,7 +78,7 @@ deepseek config                                 # show merged config
 | `/undo`          | Drop the last turn (user + reply messages)              |
 | `/retry`         | Re-run the last user prompt (drops the previous reply)  |
 | `/export [path]` | Dump the transcript to stdout, or to a file             |
-| `/sessions`      | List recent sessions                                     |
+| `/sessions [query]` | List recent sessions (or search by keyword)          |
 
 **Multi-line input**: end a line with `\` for continuation, or wrap a block in triple-backticks (```…```) to submit a multi-line paste.
 
@@ -106,6 +108,8 @@ Configuration is read from `~/.deepseek-cli/config.json` (file mode `0600`). Env
 | `--cwd <path>`                    | Working directory (defaults to `$PWD`)                             |
 | `--temperature <n>`               | Sampling temperature (default 0.7)                                 |
 | `--max-tokens <n>`                | Max output tokens per response                                     |
+| `--output-format <text\|json>`    | One-shot only: emit a single JSON result (no streaming/ANSI)       |
+| `--verbose`                      | Verbose logging                                                    |
 
 > During a turn, **Ctrl-C** aborts the in-flight request cleanly; a second Ctrl-C force-quits.
 
@@ -138,12 +142,15 @@ src/
 │   ├── registry.ts       # registry + executor
 │   ├── read_file.ts      # line-numbered file reader
 │   ├── write_file.ts     # create/overwrite
-│   ├── edit_file.ts      # exact-string replacement, replaceAll support
+│   ├── edit_file.ts      # exact string replacement, replaceAll support
 │   ├── bash.ts           # shell with workdir + timeout + truncation
-│   ├── glob.ts           # Bun.Glob-backed fast matcher
+│   ├── glob.ts           # Bun.Glob-backed matcher + pure-JS brace-aware fallback
 │   ├── grep.ts           # ripgrep with Node fallback
 │   ├── web_fetch.ts      # URL fetch with HTML → Markdown conversion
-│   ├── git_diff.ts       # read-only structured `git diff` (staged/ref-to-ref/stat)
+│   ├── git_helpers.ts    # shared spawn-based git runner (no shell)
+│   ├── git_diff.ts       # read-only structured `git diff`
+│   ├── git_status.ts     # read-only structured `git status` (porcelain + branch)
+│   ├── list_dir.ts       # single-level directory listing
 │   └── todo.ts           # in-memory task list the agent can read/update
 ├── ui/
 │   ├── theme.ts          # ANSI color helpers, zero dep
@@ -156,8 +163,9 @@ src/
 │   ├── config.ts         # layered config + auth flow
 │   └── instructions.ts   # AGENTS.md / .cursorrules loader
 └── commands/
-    ├── chat.ts           # default chat command (one-shot + REPL + slash cmds)
+    ├── chat.ts           # default chat command (one-shot + REPL + slash cmds + json mode)
     ├── auth.ts           # auth subcommand
+    ├── init.ts           # scaffolds an AGENTS.md project-instructions file
     ├── sessions.ts       # session listing subcommand
     └── config.ts         # config inspection subcommand
 ```

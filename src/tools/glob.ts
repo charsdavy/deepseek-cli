@@ -61,21 +61,12 @@ export const globTool: Tool = {
         }
       }
     } else {
-      // Fallback: shell `find` with the pattern's tail only (since `find -name`
-      // doesn't support `**`). Strip any leading `**/` and use the trailing
-      // segment as the filename name-pattern. Crude but works for simple cases.
-      const { execFile } = await import("node:child_process");
-      const { promisify } = await import("node:util");
-      const exec = promisify(execFile);
+      // Fallback: a pure-JS recursive walk with brace + `*`/`**`/`?` support.
+      // Bun.Glob is normally available; this keeps the tool correct when it
+      // isn't (e.g. some bundlers/containers).
       for (const p of patterns) {
-        const namePart = p.replace(/^\*\*\//, "").replace(/^[./]+/, "") || "*";
-        try {
-          const { stdout } = await exec("find", [cwd, "-type", "f", "-name", namePart], { maxBuffer: 5_000_000 });
-          for (const line of stdout.split("\n")) {
-            if (line) all.push(path.relative(cwd, line));
-          }
-        } catch {
-          /* ignore find errors */
+        for await (const m of manualGlob(p, cwd)) {
+          all.push(m);
         }
       }
     }
@@ -91,3 +82,76 @@ export const globTool: Tool = {
     };
   },
 };
+
+// ---- Pure-JS fallback matcher (brace + `*`/`**`/`?`) ----
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+}
+
+function properGlob(pattern: string): string {
+  const segs = pattern.split("/");
+  let out = "^";
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
+    if (seg === "**") {
+      out += "(?:.*/)?";
+      continue;
+    }
+    out += escapeRegex(seg.replace(/\*/g, "\u0000").replace(/\?/g, "\u0001"))
+      .replace(/\u0000/g, "[^/]*")
+      .replace(/\u0001/g, "[^/]");
+    if (i < segs.length - 1) out += "/";
+  }
+  out += "$";
+  return out;
+}
+
+/** Expand a single brace group (e.g. `*.{ts,tsx}` → [`*.ts`, `*.tsx`]). */
+export function expandBraces(pattern: string): string[] {
+  const open = pattern.indexOf("{");
+  if (open < 0) return [pattern];
+  const close = pattern.indexOf("}", open);
+  if (close < 0) return [pattern];
+  const prefix = pattern.slice(0, open);
+  const inner = pattern.slice(open + 1, close);
+  const suffix = pattern.slice(close + 1);
+  const alts = inner.split(",").map((a) => a.trim()).filter(Boolean);
+  const out: string[] = [];
+  for (const alt of alts) {
+    out.push(...expandBraces(`${prefix}${alt}${suffix}`));
+  }
+  return out.length ? out : [pattern];
+}
+
+const MAX_FALLBACK_FILES = 50_000;
+
+const fs = await import("node:fs/promises");
+
+export async function* manualGlob(pattern: string, cwd: string): AsyncGenerator<string> {
+  const res = expandBraces(pattern).map((p) => ({ p, re: new RegExp(properGlob(p)) }));
+  const stack: string[] = [cwd];
+  let count = 0;
+  while (stack.length > 0 && count < MAX_FALLBACK_FILES) {
+    const dir = stack.pop()!;
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (e.isFile()) {
+        const rel = path.relative(cwd, full).split(path.sep).join("/");
+        if (res.some(({ re }) => re.test(rel))) yield rel;
+        count++;
+        if (count >= MAX_FALLBACK_FILES) break;
+      }
+    }
+  }
+}

@@ -1,13 +1,13 @@
 // Simple animated spinner. No deps. Interval-based.
 
-import { C, paint, symbol } from "./theme.ts";
+import { C, outputSilent, paint, symbol } from "./theme.ts";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 let active: { id: number; text: string; frame: number } | null = null;
 
 function render(): void {
-  if (!active) return;
+  if (!active || outputSilent) return;
   const frame = SPINNER_FRAMES[active.frame % SPINNER_FRAMES.length];
   process.stdout.write(`\r${C.reset}${paint.cyan(frame)} ${paint.gray(active.text)}`);
   active.frame++;
@@ -15,6 +15,7 @@ function render(): void {
 
 export const spinner = {
   start(text: string): void {
+    if (outputSilent) return;
     if (active) this.stop();
     active = { id: 0, text, frame: 0 };
     render();
@@ -22,6 +23,7 @@ export const spinner = {
   },
 
   update(text: string): void {
+    if (outputSilent) return;
     if (!active) {
       this.start(text);
       return;
@@ -31,16 +33,16 @@ export const spinner = {
 
   stop(finalText?: string): void {
     if (!active) {
-      if (finalText !== undefined) {
+      if (finalText !== undefined && !outputSilent) {
         process.stdout.write(`\r${C.reset}${finalText}\n`);
       }
       return;
     }
     clearInterval(active.id);
     // Clear spinner line
-    process.stdout.write(`\r${C.reset}\x1b[K`);
+    if (!outputSilent) process.stdout.write(`\r${C.reset}\x1b[K`);
     active = null;
-    if (finalText !== undefined) {
+    if (finalText !== undefined && !outputSilent) {
       process.stdout.write(`${finalText}\n`);
     }
   },

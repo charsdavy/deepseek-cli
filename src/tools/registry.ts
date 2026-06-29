@@ -11,6 +11,8 @@ import { grepTool } from "./grep.ts";
 import { webFetchTool } from "./web_fetch.ts";
 import { todoWriteTool } from "./todo.ts";
 import { gitDiffTool } from "./git_diff.ts";
+import { gitStatusTool } from "./git_status.ts";
+import { listDirTool } from "./list_dir.ts";
 
 const BUILTIN_TOOLS: Tool[] = [
   readFileTool,
@@ -22,6 +24,8 @@ const BUILTIN_TOOLS: Tool[] = [
   webFetchTool,
   todoWriteTool,
   gitDiffTool,
+  gitStatusTool,
+  listDirTool,
 ];
 
 export class ToolRegistry {

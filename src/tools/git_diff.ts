@@ -4,9 +4,8 @@
 // to raw `bash git diff`, so the result is consistently framed and truncated
 // to a sane size. Read-only: never mutates the repo, so it is not dangerous.
 
-import { spawn } from "node:child_process";
-import * as path from "node:path";
 import type { Tool, ToolResult } from "./types.ts";
+import { isGitRepo, resolveGitCwd, runGit } from "./git_helpers.ts";
 
 const MAX_OUTPUT = 64_000;
 
@@ -54,7 +53,7 @@ export const gitDiffTool: Tool = {
   },
 
   async execute(args, ctx): Promise<ToolResult> {
-    const cwd = resolveCwd(args.workdir, ctx.cwd);
+    const cwd = resolveGitCwd(args.workdir, ctx.cwd);
 
     if (!(await isGitRepo(cwd))) {
       return { ok: false, content: `Not a git repository: ${cwd}`, error: "not_a_repo" };
@@ -77,8 +76,6 @@ export const gitDiffTool: Tool = {
     const { stdout, stderr, code } = await runGit(argv, cwd);
 
     if (code !== 0 && code !== 1) {
-      // git diff returns 1 when there are differences (with --exit-code) but we
-      // don't pass --exit-code, so non-zero usually means a real error.
       return {
         ok: false,
         content: `git ${argv.join(" ")} failed (exit ${code}):\n${stderr || stdout}`,
@@ -97,42 +94,12 @@ export const gitDiffTool: Tool = {
   },
 };
 
-function resolveCwd(workdir: unknown, fallback: string): string {
-  if (typeof workdir === "string" && workdir.length > 0) {
-    return path.isAbsolute(workdir) ? workdir : path.resolve(fallback, workdir);
-  }
-  return fallback;
-}
-
-async function isGitRepo(cwd: string): Promise<boolean> {
-  const { code } = await runGit(["rev-parse", "--is-inside-work-tree"], cwd);
-  return code === 0;
-}
-
-function runGit(argv: string[], cwd: string): Promise<{ stdout: string; stderr: string; code: number }> {
-  return new Promise((resolve) => {
-    const child = spawn("git", argv, { cwd, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (d: Buffer) => {
-      stdout += d.toString("utf-8");
-      if (stdout.length > MAX_OUTPUT * 2) stdout = stdout.slice(0, MAX_OUTPUT * 2);
-    });
-    child.stderr?.on("data", (d: Buffer) => {
-      stderr += d.toString("utf-8");
-    });
-    child.on("error", () => resolve({ stdout: "", stderr: "git binary not found", code: -1 }));
-    child.on("close", (code) => resolve({ stdout: stdout.trim(), stderr: stderr.trim(), code: code ?? -1 }));
-  });
-}
-
 function truncate(s: string): string {
   if (s.length <= MAX_OUTPUT) return s;
   return s.slice(0, MAX_OUTPUT) + `\n…(truncated, ${s.length - MAX_OUTPUT} more chars)`;
 }
 
 function summarizeStat(stdout: string): string {
-  // Look for the trailing N files changed summary line.
   const m = stdout.match(/(\d+) files? changed/i);
   return m ? `${m[1]} changed` : (stdout ? "diff" : "clean");
 }

@@ -12,13 +12,14 @@
     "build": "bun build src/index.ts --compile --minify --outfile dist/deepseek",
     "postbuild": "node -e \"require('fs').chmodSync('dist/deepseek', 0o755)\"",
     "typecheck": "tsc --noEmit",
-    "lint": "tsc --noEmit",
+    "lint": "tsc --noEmit && biome check src tests scripts",
     "test": "bun test",
     "coverage": "bun test --coverage",
     "prepublishOnly": "bun run build"
   },
   "dependencies": {},
   "devDependencies": {
+    "@biomejs/biome": "2.5.1",
     "@types/bun": "latest",
     "typescript": "^5.7.2"
   },
