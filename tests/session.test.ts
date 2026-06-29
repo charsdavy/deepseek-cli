@@ -43,9 +43,10 @@ describe("session store", () => {
   it("lists saved sessions sorted by updatedAt desc", async () => {
     const a = newSession("deepseek-chat", undefined, "/a");
     const b = newSession("deepseek-chat", undefined, "/b");
-    a.updatedAt = "2025-01-01T00:00:00.000Z";
-    b.updatedAt = "2025-06-01T00:00:00.000Z";
     await saveSession(a);
+    // Guarantee b's timestamp is strictly newer than a's (saveSession stamps
+    // with now, so a tiny delay makes the ordering deterministic on any host).
+    await new Promise((r) => setTimeout(r, 5));
     await saveSession(b);
     const list = await listSessions(10);
     expect(list.length).toBe(2);

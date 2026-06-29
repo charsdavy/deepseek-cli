@@ -15,6 +15,7 @@ The CLI pairs streaming chat completions with **tool calling** — the model can
 - **Agentic tool loop** — model drives the work: read → edit → bash → grep until the task is done.
 - **Streaming** chat with reasoning trace support (`deepseek-reasoner`).
 - **11 built-in tools**: `read_file`, `write_file`, `edit_file`, `bash`, `glob`, `grep`, `web_fetch`, `git_diff`, `git_status`, `list_dir`, `todo_write`.
+- **MCP support** — connect Model Context Protocol servers (stdio) and use their tools alongside the built-ins; toggle servers per-session with `/mcp`.
 - **Skills** — load specialized instruction packs into the system prompt; pick which are active with `/skill`.
 - **Parallel tool execution** — multiple independent tool calls in one turn run concurrently.
 - **Permission system** — dangerous tools (writes, shell) ask for `y/n` approval; `--yolo` / `--approval-mode` skip prompts.
@@ -74,6 +75,7 @@ deepseek config                                 # show merged config
 | `/model [name]`  | Show or switch the active model (rebuilds the prompt)   |
 | `/new`           | Start a fresh session — clears context, new id         |
 | `/skill [name]`  | List skills, or toggle a skill on/off                  |
+| `/mcp [name]`    | List MCP servers, or toggle a server's tools           |
 | `/tokens`        | Show token usage (estimate + real API totals)          |
 | `/tools`         | List registered tools                                    |
 | `/system`        | Show the active system prompt                            |
@@ -112,6 +114,7 @@ Configuration is read from `~/.deepseek-cli/config.json` (file mode `0600`). Env
 | `--temperature <n>`               | Sampling temperature (default 0.7)                                 |
 | `--max-tokens <n>`                | Max output tokens per response                                     |
 | `--output-format <text\|json>`    | One-shot only: emit a single JSON result (no streaming/ANSI)       |
+| `--no-mcp`                       | Do not load MCP servers this session                              |
 | `--verbose`                      | Verbose logging                                                    |
 
 > During a turn, **Ctrl-C** aborts the in-flight request cleanly; a second Ctrl-C force-quits.
@@ -154,6 +157,41 @@ EOF
 
 > `deepseek init` scaffolds an `AGENTS.md` template (repo-level instructions); skills are the per-session, toggleable complement.
 
+### MCP (Model Context Protocol)
+
+Connect external MCP servers over stdio; their tools are exposed to the agent as `mcp_<server>_<tool>` and called like any built-in. Configure servers in an `mcp.json` (Claude-Code-compatible shape):
+
+| Location                       | Scope           |
+| ------------------------------ | --------------- |
+| `~/.deepseek-cli/mcp.json`     | global (user)   |
+| `<repo>/.mcp.json`             | project-specific |
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/abs/path"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..." }
+    }
+  }
+}
+```
+
+Servers start when a session begins (best-effort — a failed server is skipped, not fatal). Manage them live in the REPL:
+
+```bash
+/mcp                 # list servers with active state (● = tools loaded)
+/mcp filesystem      # toggle that server's tools off (stays connected)
+/mcp filesystem      # …and back on
+```
+
+Use `--no-mcp` to skip loading servers for a session (e.g. `deepseek --no-mcp`).
+
 ## Architecture
 
 ```
@@ -192,6 +230,10 @@ src/
 │   └── store.ts          # session save / load / list / delete / search / prune
 ├── skills/
 │   └── store.ts          # skill discovery + reading (global + project .md files)
+├── mcp/
+│   ├── client.ts         # JSON-RPC 2.0 MCP client (transport-agnostic)
+│   ├── stdio.ts          # stdio transport: spawn server, newline-delimited JSON
+│   └── registry.ts       # mcp.json config load + server lifecycle + tool export
 ├── config/
 │   ├── config.ts         # layered config + auth flow
 │   └── instructions.ts   # AGENTS.md / .cursorrules loader

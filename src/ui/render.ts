@@ -208,12 +208,18 @@ export function printTip(text: string): void {
 }
 
 export function printToolHeader(toolName: string, summary: string): void {
-  writeLine(
-    `${paint.cyan(symbol.arrow)} ${paint.bold(toolName)} ${paint.gray(summary)}`,
-  );
+  // Compact, Claude-Code-style: a filled dot marker, bold tool name, dimmed
+  // argument summary on the same line.
+  const head = summary ? `${paint.bold(toolName)} ${paint.gray(summary)}` : paint.bold(toolName);
+  writeLine(`${paint.bright.cyan("⏺")} ${head}`);
 }
 
-export function printBordered(title: string, body: string, color: "cyan" | "yellow" = "cyan"): void {
+/** Subtle dim rule between turns, mirroring Claude Code's visual rhythm. */
+export function printSeparator(): void {
+  writeLine(paint.dim("─".repeat(termWidth())));
+}
+
+export function printBordered(title: string, body: string, color: "cyan" | "yellow" | "magenta" = "cyan"): void {
   const w = termWidth();
   const titleLine = paint[color](`┌ ${title} `) + paint.dim("─".repeat(Math.max(1, w - title.length - 3)));
   writeLine(titleLine);

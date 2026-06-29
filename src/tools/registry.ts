@@ -39,6 +39,11 @@ export class ToolRegistry {
     this.tools.set(tool.name, tool);
   }
 
+  /** Remove a tool by name (used to toggle MCP servers off at runtime). */
+  unregister(name: string): boolean {
+    return this.tools.delete(name);
+  }
+
   list(): Tool[] {
     return Array.from(this.tools.values());
   }

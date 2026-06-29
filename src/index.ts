@@ -57,6 +57,7 @@ async function main(): Promise<void> {
         temperature: args.temperature,
         maxTokens: args.maxTokens,
         outputFormat: args.outputFormat,
+        noMcp: args.noMcp,
         verbose: args.verbose,
       });
       return;
