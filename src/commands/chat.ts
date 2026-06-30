@@ -564,14 +564,41 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
     case "skill": {
       const arg = rest[0];
       if (!arg) {
-        // List all skills, marking active ones.
         const entries = await ctx.skills.list();
         const active = new Set(ctx.skills.active());
         if (entries.length === 0) {
           writeLine(paint.gray("(no skills found)"));
-          writeLine(paint.gray("create one at ~/.deepseek-cli/skills/<name>.md or ./.deepseek/skills/<name>.md"));
+          writeLine(paint.gray("create one: deepseek skill create <name>"));
           return "continue";
         }
+        // Interactive arrow-key picker in a TTY: selecting a skill activates it
+        // so subsequent turns prioritize its instructions.
+        const isTTY = process.stdin.isTTY === true && process.stdout.isTTY === true;
+        if (isTTY) {
+          const opts = [
+            { label: paint.gray("(none — clear active skills)"), value: "__clear__" },
+            ...entries.map((e) => ({
+              label: `${active.has(e.name) ? paint.green("●") : paint.gray("○")} ${e.name} ${paint.gray(`[${e.source}]`)}`,
+              value: e.name,
+            })),
+          ];
+          const picked = await selectOption("Select a skill to activate", opts, 1);
+          if (picked === "__clear__") {
+            ctx.skills.clear();
+            printSystem("all skills deactivated", "yellow");
+          } else if (picked) {
+            if (active.has(picked)) {
+              printSystem(`skill '${picked}' already active`, "green");
+            } else {
+              await ctx.skills.toggle(picked);
+              printSystem(`skill '${picked}' activated — prioritized for upcoming turns`, "green");
+            }
+          } else {
+            printSystem("skill selection cancelled", "yellow");
+          }
+          return "continue";
+        }
+        // Non-TTY fallback: plain listing.
         writeLine(paint.gray("available skills:"));
         for (const e of entries) {
           const mark = active.has(e.name) ? paint.green("●") : paint.gray("○");
