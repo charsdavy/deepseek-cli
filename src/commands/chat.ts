@@ -18,6 +18,8 @@ import { newSession, newSessionId, loadSession, listSessions, searchSessions, sa
 import { loadHistory, appendHistory } from "../session/history.ts";
 import { listSkills, readSkill } from "../skills/store.ts";
 import { McpRegistry, loadMcpConfig } from "../mcp/registry.ts";
+import { log } from "../log/logger.ts";
+import { VERSION } from "../cli.ts";
 import { paint, symbol } from "../ui/theme.ts";
 import { blank, printBordered, printError, printSeparator, printSystem, printTip, setOutputSilent, writeLine } from "../ui/render.ts";
 import { outputSilent } from "../ui/theme.ts";
@@ -217,6 +219,17 @@ export async function runChat(args: ChatArgs): Promise<void> {
   const permissions = new PermissionManager({
     mode: skipAll ? "auto" : "ask",
     skipAll,
+  });
+
+  log.info("startup", {
+    version: VERSION,
+    model,
+    reasoning,
+    reasoningEffort,
+    maxContext,
+    cwd,
+    yolo: skipAll,
+    resume: args.resume ?? args.continueLast,
   });
 
   // MCP servers (stdio transport). Best-effort: a failed server is skipped
@@ -778,6 +791,9 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
       printError("usage: /reasoning on|off|effort high|max");
       return "continue";
     }
+    case "log":
+      printSystem(`log file: ${log.filePath}`, "blue");
+      return "continue";
     case "context": {
       const arg = rest[0];
       if (!arg) {
@@ -882,6 +898,7 @@ function printSlashHelp(): void {
     ["/model [name]", "arrow-key model picker, or switch to a specific id"],
     ["/reasoning [on|off|effort high|max]", "show/set thinking default + intensity"],
     ["/context [tokens]", "show/set the context-trim budget"],
+    ["/log", "show the log file path"],
     ["/new", "start a fresh session, clearing context"],
     ["/skill [name]", "list skills, or toggle a skill on/off"],
     ["/mcp [name]", "list MCP servers, or toggle a server's tools"],

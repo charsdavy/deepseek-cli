@@ -10,6 +10,7 @@ import { McpClient, type McpConfig, type McpServerConfig, type McpToolDef } from
 import { StdioMcpTransport } from "./stdio.ts";
 import type { Tool, ToolResult, ToolContext } from "../tools/types.ts";
 import { printSystem } from "../ui/render.ts";
+import { log } from "../log/logger.ts";
 
 const GLOBAL_MCP_DIR = path.join(os.homedir(), ".deepseek-cli");
 
@@ -75,10 +76,12 @@ export class McpRegistry {
         this.clients.set(name, client);
         for (const t of tools) this.bound.push({ serverName: name, toolDef: t });
         results.push({ name, toolCount: tools.length, ok: true, enabled: true });
+        log.info("mcp connected", { server: name, tools: tools.length });
         printSystem(`mcp: ${name} connected (${tools.length} tool${tools.length === 1 ? "" : "s"})`, "green");
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         results.push({ name, toolCount: 0, ok: false, enabled: false, error: msg });
+        log.error("mcp connect failed", { server: name, error: msg });
         printSystem(`mcp: ${name} failed to start — ${msg}`, "yellow");
       }
     }
