@@ -95,9 +95,16 @@ export async function askYesNo(prompt: string, defaultValue = false): Promise<bo
 }
 
 /** Read input that may span multiple lines via `\\` continuation or ``` fences.
- *  Pass `historySeed` (newest-first) to enable Up/Down recall of past prompts. */
-export async function askMultiline(prompt: string, historySeed?: string[]): Promise<string> {
+ *  Pass `historySeed` (newest-first) to enable Up/Down recall of past prompts.
+ *  Pass `completer` to-enable Tab completion (e.g. slash commands when the line
+ *  starts with `/`). */
+export async function askMultiline(
+  prompt: string,
+  historySeed?: string[],
+  completer?: (line: string, cb: (err: null, result: [string[], string]) => void) => void,
+): Promise<string> {
   const r = getRl();
+  if (completer) (r as unknown as { completer: (line: string, cb: (err: null, result: [string[], string]) => void) => void }).completer = completer;
   if (historySeed && historySeed.length > 0) {
     // readline expects index 0 = most recent; seed a copy so its in-session
     // mutations don't touch our source array.

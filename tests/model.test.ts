@@ -19,6 +19,7 @@ const noopMcp = {
   toggle: () => false,
   toolsForServer: () => [] as Tool[],
 };
+const noopPerms = { dangerousTools: () => ["bash"], isAllowed: () => false, allow: () => {}, clear: () => {} };
 
 describe("/model slash command", () => {
   let session: ReturnType<typeof newSession>;
@@ -39,7 +40,7 @@ describe("/model slash command", () => {
         session.model = id;
       },
       skills: noopSkills as SlashCtx["skills"],
-      mcp: noopMcp as SlashCtx["mcp"],
+      mcp: noopMcp as SlashCtx["mcp"], permissions: noopPerms,
       reasoning: { get: () => false, set: async () => {} },
       effort: { get: () => undefined, set: async () => {} },
       context: { get: () => undefined, set: async () => {} },
@@ -90,7 +91,7 @@ describe("runModelSetupFlow (non-TTY guard)", () => {
       tools: new ToolRegistry(),
       setModel: (id: string) => { calls.push(`model:${id}`); },
       skills: noopSkills as SlashCtx["skills"],
-      mcp: noopMcp as SlashCtx["mcp"],
+      mcp: noopMcp as SlashCtx["mcp"], permissions: noopPerms,
       reasoning: { get: () => true, set: async () => { calls.push("reasoning"); } },
       effort: { get: () => "high", set: async () => { calls.push("effort"); } },
       context: { get: () => 60000, set: async () => { calls.push("context"); } },
@@ -110,7 +111,7 @@ describe("runModelSetupFlow logic (injected picks)", () => {
       tools: new ToolRegistry(),
       setModel: (id: string) => { calls.push(`model:${id}`); },
       skills: noopSkills as SlashCtx["skills"],
-      mcp: noopMcp as SlashCtx["mcp"],
+      mcp: noopMcp as SlashCtx["mcp"], permissions: noopPerms,
       reasoning: { get: () => opts.reasoning, set: async (on: boolean) => { calls.push(`reasoning:${on}`); } },
       effort: { get: () => opts.effort, set: async (e: "high" | "max") => { calls.push(`effort:${e}`); } },
       context: { get: () => opts.context, set: async (n: number) => { calls.push(`context:${n}`); } },
