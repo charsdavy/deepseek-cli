@@ -2,6 +2,7 @@
 
 import type { Tool, ToolContext, ToolResult } from "./types.ts";
 import { toOpenAiTool } from "./types.ts";
+import { log } from "../log/logger.ts";
 import { readFileTool } from "./read_file.ts";
 import { readFilesTool } from "./read_files.ts";
 import { writeFileTool } from "./write_file.ts";
@@ -69,24 +70,40 @@ export class ToolRegistry {
     name: string,
     args: Record<string, unknown>,
     ctx: ToolContext,
-  ): Promise<ToolResult> {
+  ): Promise<ToolResult & { ms: number }> {
     const tool = this.tools.get(name);
     if (!tool) {
+      log.warn("tool unknown", { name });
       return {
         ok: false,
         content: `Tool '${name}' is not registered.`,
         error: "unknown_tool",
+        ms: 0,
       };
     }
+    const start = performance.now();
+    let result: ToolResult;
     try {
-      return await tool.execute(args, ctx);
+      result = await tool.execute(args, ctx);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
+      log.error("tool exception", { name, error: msg, ms: Math.round(performance.now() - start) });
       return {
         ok: false,
         content: `Tool '${name}' threw: ${msg}`,
         error: "exception",
+        ms: Math.round(performance.now() - start),
       };
     }
+    const ms = Math.round(performance.now() - start);
+    log.info("tool", {
+      name,
+      ok: result.ok,
+      error: result.error,
+      contentLen: (result.content ?? "").length,
+      summary: result.uiSummary,
+      ms,
+    });
+    return { ...result, ms };
   }
 }

@@ -71,10 +71,14 @@ export async function runAgentLoop(
   let lastUsage: TokenUsage | undefined;
 
   const shouldReason = opts.reasoning ?? isReasoningModel(opts.model);
+  const loopStart = performance.now();
+  let apiTotalMs = 0;
+  let toolsTotalMs = 0;
   log.info("agent loop start", { model: opts.model, reasoning: shouldReason, reasonEffort: opts.reasoningEffort, messages: messagesIn.length, maxIterations });
 
   while (iterations < maxIterations) {
     iterations++;
+    const iterStart = performance.now();
     log.debug("iteration", { iteration: iterations });
 
     // Bail out early if the user aborted the turn.
@@ -96,6 +100,7 @@ export async function runAgentLoop(
     let acc: AccumulatedAssistant = { content: "", reasoning: "", toolCalls: [] };
     let hadApiError = false;
 
+    const apiStart = performance.now();
     try {
       const gen = streamChatCompletion({
         apiKey: opts.apiKey,
@@ -158,6 +163,8 @@ export async function runAgentLoop(
       printError(`API error: ${msg}`);
       // Stop the loop on unrecoverable errors but return partial state.
       break;
+    } finally {
+      apiTotalMs += Math.round(performance.now() - apiStart);
     }
 
     if (hadApiError) break;
@@ -237,22 +244,31 @@ export async function runAgentLoop(
         spawnAgent: opts.spawnAgent,
       };
 
+      const toolsStart = performance.now();
       const results = await Promise.all(
         pending.map(async (p) => {
           const r = await tools.execute(p.name, p.args, ctx);
-          return { id: p.id, name: p.name, result: r };
+          return { id: p.id, name: p.name, result: r, ms: r.ms };
         }),
       );
+      toolsTotalMs += Math.round(performance.now() - toolsStart);
       spinner.stop();
 
       // Push tool messages in original order for the model.
       for (const r of results) {
         opts.onToolEnd?.(r.name, r.result);
         const payload = capToolResult(r.result.content ?? "", r.name);
-        log.info("tool", { name: r.name, ok: r.result.ok, error: r.result.error, contentLen: (r.result.content ?? "").length, summary: r.result.uiSummary });
         messages.push({ role: "tool", tool_call_id: r.id, content: payload });
       }
     }
+
+    log.debug("iteration done", {
+      iteration: iterations,
+      iterMs: Math.round(performance.now() - iterStart),
+      contentLen: acc.content.length,
+      reasoningLen: acc.reasoning.length,
+      toolCalls: acc.toolCalls.length,
+    });
   }
 
   if (iterations >= maxIterations) {
@@ -260,7 +276,17 @@ export async function runAgentLoop(
     printSystem(`max iterations (${maxIterations}) reached — stopping agent.`, "yellow");
   }
 
-  log.info("agent loop end", { iterations, usage: lastUsage, finalTextLen: finalText.length });
+  const loopMs = Math.round(performance.now() - loopStart);
+  log.info("agent loop end", {
+    iterations,
+    usage: lastUsage,
+    finalTextLen: finalText.length,
+    loopMs,
+    apiMs: apiTotalMs,
+    toolsMs: toolsTotalMs,
+    apiSharePct: loopMs > 0 ? Math.round((apiTotalMs / loopMs) * 100) : 0,
+    toolsSharePct: loopMs > 0 ? Math.round((toolsTotalMs / loopMs) * 100) : 0,
+  });
   return { messages, iterations, finalText, usage: lastUsage };
 }
 

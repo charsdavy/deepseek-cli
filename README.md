@@ -256,7 +256,53 @@ tail -f ~/.deepseek-cli/logs/deepseek-*.log
 /log                        # prints the current log file path
 ```
 
-What's logged (info): startup (model/cwd/flags), each agent-loop start/end + token usage, every tool call (name/ok/length/summary — not full args), API errors (status + message), MCP connect/fail, and uncaught crashes. Attach the day's log to bug reports — it's safe to share.
+What's logged (info): startup (model/cwd/flags), each agent-loop start/end + token usage, every tool call (name/ok/length/summary/ms — not full args), API errors (status + message), MCP connect/fail, and uncaught crashes. Attach the day's log to a bug report — it's safe to share.
+
+What's logged (debug, `--verbose`): per-iteration totals (`iterMs`/content/reasoning/toolCalls), API timing (`fetchMs`/`ttfbMs`/`streamMs`/`chunks`/`usage`, correlated by `reqId`), and retry attempts (`reason`/`attempt`/`delayMs`). These are the inputs for the perf report below.
+
+### Performance report
+
+`scripts/perf-report.ts` aggregates a day's log into a quick perf summary — where time is going, which tools are slow, which API calls are slow, and retry/failure hotspots.
+
+```bash
+bun run scripts/perf-report.ts          # today's log, summary mode
+bun run scripts/perf-report.ts path.log # a specific file
+bun run scripts/perf-report.ts --tail 20   # only the last 20 runs
+bun run scripts/perf-report.ts --run 3     # per-iteration waterfall for run #3
+```
+
+Sample summary output:
+
+```
+perf-report · deepseek-2026-06-30.log · 2 run(s)
+
+Aggregate (completed runs only):
+  wall: 17.54s  api: 16.70s (95%)  tools: 657ms (04%)  other: 183ms (01%)
+  iterations: 3  |  runs completed: 2/2
+  aborts: 0  |  failed runs: 0  |  api failures: 1  |  tool failures: 1
+  retries: 1  |  retries exhausted: 0
+
+Slowest runs:
+  #2  14.01s     api=13.70s  (98%) tools=192ms   (01%)  iter=2   deepseek-reasoner  10:00:00
+  ...
+
+Slowest API calls (by streamMs):
+  6.00s      ttfb=2.00s     chunks=120   deepseek-reasoner  10:00:01
+  ...
+```
+
+The `--run N` waterfall re-sequences API + tool events back into per-iteration rows, folding retries (`attempts=n`) into the iteration they belong to:
+
+```
+Run #2  deepseek-reasoner  10:00:00
+  total=14.01s  api=13.70s (98%)  tools=192ms (01%)  iterations=2
+
+  iter 1   6.19s      api=6.00s   (97%) tools=192ms   (03%)  chunks=120
+          bash             180ms     ok  ls /tmp
+          read_file        12ms      ok  /tmp/a.txt
+  iter 2   4.60s      api=4.60s   (100%) tools=0ms     (00%)  chunks=90  attempts=2
+          retries:         #1 rate_limit delay=2.00s→ok
+```
 
 ## Architecture
 
