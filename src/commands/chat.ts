@@ -18,6 +18,8 @@ import { newSession, newSessionId, loadSession, listSessions, searchSessions, sa
 import { loadHistory, appendHistory } from "../session/history.ts";
 import { listSkills, readSkill } from "../skills/store.ts";
 import { McpRegistry, loadMcpConfig } from "../mcp/registry.ts";
+import type { McpServerConfig } from "../mcp/registry.ts";
+import { parseAddArgs, addServerToConfig } from "./mcp.ts";
 import { log } from "../log/logger.ts";
 import { VERSION } from "../cli.ts";
 import { paint, symbol } from "../ui/theme.ts";
@@ -252,6 +254,21 @@ export async function runChat(args: ChatArgs): Promise<void> {
     servers: () => mcp.status().map((s) => ({ name: s.name, enabled: s.enabled, toolCount: s.toolCount })),
     toggle: (name: string) => mcp.toggleServer(name),
     toolsForServer: (name: string) => mcp.toolsForServer(name),
+    add: async (parsed) => {
+      try {
+        await addServerToConfig(parsed); // persist to mcp.json
+        const cfg: McpServerConfig = {
+          command: parsed.command,
+          args: parsed.args.length ? parsed.args : undefined,
+          env: Object.keys(parsed.env).length ? parsed.env : undefined,
+        };
+        const res = await mcp.addServer(parsed.name, cfg); // live connect
+        if (res.ok) for (const t of mcp.toolsForServer(parsed.name)) tools.register(t);
+        return { ok: res.ok, toolCount: res.toolCount, error: res.error };
+      } catch (e) {
+        return { ok: false, toolCount: 0, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
   };
 
   // Permission API for the /allow one-key authorization command.
@@ -671,6 +688,9 @@ interface McpApi {
   servers: () => { name: string; enabled: boolean; toolCount: number }[];
   toggle: (name: string) => boolean;
   toolsForServer: (name: string) => Tool[];
+  /** Add a server live: write config + spawn/connect + register tools.
+   *  Returns { ok, toolCount, error? }. */
+  add: (parsed: import("./mcp.ts").ParsedMcpAdd) => Promise<{ ok: boolean; toolCount: number; error?: string }>;
 }
 
 // /model setup wizard: a chained arrow-key flow that lets the user pick the
@@ -864,9 +884,25 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
     }
     case "mcp": {
       const arg = rest[0];
+      // /mcp add <name> <command> [args...] [--env K=V] [--project]
+      if (arg === "add") {
+        const parsed = parseAddArgs(rest.slice(1));
+        if (!parsed) {
+          printError("usage: /mcp add <name> <command> [args...] [--env K=V ...] [--project]");
+          return "continue";
+        }
+        const res = await ctx.mcp.add(parsed);
+        if (res.ok) {
+          printSystem(`mcp '${parsed.name}' connected — ${res.toolCount} tool${res.toolCount === 1 ? "" : "s"} (saved to mcp.json)`, "green");
+        } else {
+          printError(`mcp '${parsed.name}' failed to connect: ${res.error ?? "unknown"} (config still saved; will retry next session)`);
+        }
+        return "continue";
+      }
       const list = ctx.mcp.servers();
       if (list.length === 0) {
-        writeLine(paint.gray("(no MCP servers connected; configure ~/.deepseek-cli/mcp.json or ./.mcp.json)"));
+        writeLine(paint.gray("(no MCP servers connected)"));
+        writeLine(paint.gray("add one: /mcp add <name> <command> [args...] [--env K=V]"));
         return "continue";
       }
       if (!arg) {
@@ -875,7 +911,7 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
           const mark = s.enabled ? paint.green("●") : paint.gray("○");
           writeLine(`  ${mark} ${pad(s.name, 20)} ${paint.gray(s.toolCount + " tool" + (s.toolCount === 1 ? "" : "s"))}`);
         }
-        writeLine(paint.gray("\n/mcp <name> toggles a server's tools on/off"));
+        writeLine(paint.gray("\n/mcp <name> toggles · /mcp add … adds · /mcp clear-ish via config"));
         return "continue";
       }
       const target = list.find((s) => s.name === arg);
