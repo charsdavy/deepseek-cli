@@ -10,19 +10,30 @@ export interface ModelInfo {
 
 export const MODELS: ModelInfo[] = [
   {
+    id: "deepseek-v4-flash",
+    label: "V4 Flash",
+    description: "Fast lightweight model",
+  },
+  {
+    id: "deepseek-v4-pro",
+    label: "V4 Pro",
+    description: "Flagship model",
+    thinking: true,
+  },
+  {
     id: "deepseek-chat",
     label: "Chat",
-    description: "General-purpose dialogue & coding model",
+    description: "General-purpose (deprecating 2026-07-24)",
   },
   {
     id: "deepseek-reasoner",
     label: "Reasoner",
-    description: "Chain-of-thought reasoning model (R1)",
+    description: "Chain-of-thought reasoning (deprecating 2026-07-24)",
     thinking: true,
   },
 ];
 
-export const DEFAULT_MODEL = "deepseek-chat";
+export const DEFAULT_MODEL = "deepseek-v4-flash";
 
 export const MODEL_IDS = MODELS.map((m) => m.id);
 
