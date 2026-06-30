@@ -27,7 +27,7 @@ git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
 mkdir -p Formula
 
-echo "==> Generating Formula/$FORMULA_NAME"
+echo "==> Generating $FORMULA_PATH"
 sed \
   -e "s|{{VERSION}}|${VERSION}|g" \
   -e "s|{{TAG}}|${TAG}|g" \
