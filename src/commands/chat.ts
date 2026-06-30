@@ -469,7 +469,7 @@ function printWelcome(model: string, reasoning: boolean, yolo: boolean, baseUrl?
   printBordered(`${symbol.rocket} DeepSeek CLI`, lines.join("\n"), "magenta");
 }
 
-interface SlashCtx {
+export interface SlashCtx {
   apiKey: string;
   model: string;
   temperature?: number;
@@ -494,7 +494,7 @@ interface McpApi {
   toolsForServer: (name: string) => Tool[];
 }
 
-async function handleSlashCommand(input: string, session: Session, ctx: SlashCtx): Promise<"exit" | "continue"> {
+export async function handleSlashCommand(input: string, session: Session, ctx: SlashCtx): Promise<"exit" | "continue"> {
   const trimmed = input.slice(1).trim();
   const [cmd, ...rest] = trimmed.split(/\s+/);
   switch (cmd.toLowerCase()) {
@@ -516,17 +516,20 @@ async function handleSlashCommand(input: string, session: Session, ctx: SlashCtx
         writeLine(paint.gray("available models:"));
         for (const m of MODELS) {
           const cur = m.id === session.model ? paint.green("← current") : "";
-          writeLine(`  ${pad(m.id, 20)} ${paint.gray(m.description)} ${cur}`);
+          writeLine(`  ${paint.cyan(pad(m.id, 20))} ${paint.gray(m.description)} ${cur}`);
         }
+        writeLine(paint.gray("\n/model <name>  — switch (catalog name or any model id)"));
         return "continue";
       }
-      if (!findModel(target)) {
-        printError(`unknown model '${target}'`);
-        return "continue";
-      }
+      const known = findModel(target);
       ctx.setModel(target);
-      const note = isReasoningModel(target) ? " (reasoning on)" : "";
-      printSystem(`switched model to ${target}${note}`, "green");
+      if (known) {
+        const note = known.thinking ? " (reasoning on)" : isReasoningModel(target) ? " (reasoning on)" : "";
+        printSystem(`switched model to ${target}${note}`, "green");
+      } else {
+        // Non-catalog model (e.g. used via --base-url with another provider).
+        printSystem(`switched model to ${target} (non-catalog; reasoning defaults off)`, "yellow");
+      }
       return "continue";
     }
     case "new": {

@@ -20,17 +20,6 @@ export const MODELS: ModelInfo[] = [
     description: "Chain-of-thought reasoning model (R1)",
     thinking: true,
   },
-  {
-    id: "deepseek-v4-pro",
-    label: "V4 Pro",
-    description: "Flagship deep-thinking model (placeholder)",
-    thinking: true,
-  },
-  {
-    id: "deepseek-v4-flash",
-    label: "V4 Flash",
-    description: "Fast lightweight model (placeholder)",
-  },
 ];
 
 export const DEFAULT_MODEL = "deepseek-chat";

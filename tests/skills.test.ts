@@ -4,24 +4,38 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import { listSkills, readSkill, skillDirs } from "../src/skills/store.ts";
 
-const ORIG = process.env.DEEPSEEK_SKILLS_DIR;
+const ORIG_DS = process.env.DEEPSEEK_SKILLS_DIR;
+const ORIG_CC = process.env.CLAUDE_CONFIG_DIR;
+const ORIG_CX = process.env.CODEX_HOME;
 let globalDir: string;
+let claudeHome: string;
+let codexHome: string;
 let projectDir: string;
 let cwd: string;
 
 beforeEach(async () => {
   cwd = await fs.mkdtemp(path.join(os.tmpdir(), "ds-skill-test-"));
   globalDir = await fs.mkdtemp(path.join(os.tmpdir(), "ds-skill-global-"));
+  claudeHome = await fs.mkdtemp(path.join(os.tmpdir(), "ds-skill-claude-"));
+  codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "ds-skill-codex-"));
   projectDir = path.join(cwd, ".deepseek", "skills");
   await fs.mkdir(projectDir, { recursive: true });
   process.env.DEEPSEEK_SKILLS_DIR = globalDir;
+  process.env.CLAUDE_CONFIG_DIR = claudeHome;
+  process.env.CODEX_HOME = codexHome;
 });
 
 afterEach(async () => {
-  if (ORIG === undefined) delete process.env.DEEPSEEK_SKILLS_DIR;
-  else process.env.DEEPSEEK_SKILLS_DIR = ORIG;
-  await fs.rm(globalDir, { recursive: true, force: true });
-  await fs.rm(cwd, { recursive: true, force: true });
+  for (const [k, v] of Object.entries({ DEEPSEEK_SKILLS_DIR: ORIG_DS, CLAUDE_CONFIG_DIR: ORIG_CC, CODEX_HOME: ORIG_CX })) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  await Promise.all([
+    fs.rm(globalDir, { recursive: true, force: true }),
+    fs.rm(claudeHome, { recursive: true, force: true }),
+    fs.rm(codexHome, { recursive: true, force: true }),
+    fs.rm(cwd, { recursive: true, force: true }),
+  ]);
 });
 
 describe("skillDirs", () => {
@@ -44,10 +58,23 @@ describe("listSkills", () => {
     expect(names).toContain("g1");
     expect(names).toContain("p1");
     expect(names).toContain("shared");
-    // Deduped: shared appears once (global wins first).
+    // Deduped: shared appears once (deepseek global wins first).
     expect(names.filter((n) => n === "shared").length).toBe(1);
     const shared = list.find((s) => s.name === "shared")!;
-    expect(shared.source).toBe("global");
+    expect(shared.source).toBe("deepseek");
+  });
+
+  it("scans Claude Code and Codex skill dirs too", async () => {
+    // Global skills under the relocated claude/codex homes + project-level ones.
+    await fs.mkdir(path.join(claudeHome, "skills"), { recursive: true });
+    await fs.mkdir(path.join(codexHome, "skills"), { recursive: true });
+    await fs.writeFile(path.join(claudeHome, "skills", "cc.md"), "claude skill");
+    await fs.writeFile(path.join(codexHome, "skills", "cx.md"), "codex skill");
+
+    const list = await listSkills(cwd);
+    const byName = new Map(list.map((s) => [s.name, s.source] as const));
+    expect(byName.get("cc")).toBe("claude");
+    expect(byName.get("cx")).toBe("codex");
   });
 
   it("returns [] when no skill dirs exist", async () => {
