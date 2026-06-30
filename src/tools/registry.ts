@@ -3,6 +3,7 @@
 import type { Tool, ToolContext, ToolResult } from "./types.ts";
 import { toOpenAiTool } from "./types.ts";
 import { readFileTool } from "./read_file.ts";
+import { readFilesTool } from "./read_files.ts";
 import { writeFileTool } from "./write_file.ts";
 import { editFileTool } from "./edit_file.ts";
 import { bashTool } from "./bash.ts";
@@ -17,6 +18,7 @@ import { taskTool } from "./task.ts";
 
 const BUILTIN_TOOLS: Tool[] = [
   readFileTool,
+  readFilesTool,
   writeFileTool,
   editFileTool,
   bashTool,

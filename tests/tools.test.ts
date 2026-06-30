@@ -114,6 +114,79 @@ describe("read_file tool", () => {
   });
 });
 
+// ---- read_files (batch) tool ----
+import { readFilesTool } from "../src/tools/read_files.ts";
+
+describe("read_files tool", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ds-test-"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("reads multiple files in one call, each in its own <file> section", async () => {
+    const a = path.join(tmpDir, "a.txt");
+    const b = path.join(tmpDir, "b.txt");
+    await fs.writeFile(a, "alpha1\nalpha2\n", "utf-8");
+    await fs.writeFile(b, "beta1\nbeta2\n", "utf-8");
+
+    const res = await readFilesTool.execute({ paths: [a, b] }, { cwd: process.cwd() });
+    expect(res.ok).toBe(true);
+    expect(res.content).toContain(`<file path="${a}">`);
+    expect(res.content).toContain(`<file path="${b}">`);
+    expect(res.content).toContain("alpha1");
+    expect(res.content).toContain("beta2");
+    expect(res.content).toMatch(/batch: 2\/2 files read/);
+  });
+
+  it("per-file errors are reported without aborting the batch", async () => {
+    const ok = path.join(tmpDir, "ok.txt");
+    const dir = path.join(tmpDir, "sub");
+    const missing = path.join(tmpDir, "nope.txt");
+    await fs.writeFile(ok, "hi\n", "utf-8");
+    await fs.mkdir(dir);
+
+    const res = await readFilesTool.execute({ paths: [ok, dir, missing] }, { cwd: process.cwd() });
+    expect(res.ok).toBe(true);
+    expect(res.content).toContain(`<file path="${ok}">`);
+    expect(res.content).toContain(`error="is_directory"`);
+    expect(res.content).toContain(`error="stat_failed"`);
+    expect(res.content).toMatch(/batch: 1\/3 files read/);
+  });
+
+  it("accepts per-item {filePath, offset, limit} objects", async () => {
+    const f = path.join(tmpDir, "multi.txt");
+    await fs.writeFile(f, "l1\nl2\nl3\nl4\nl5\n", "utf-8");
+
+    const res = await readFilesTool.execute(
+      { paths: [{ filePath: f, offset: 2, limit: 2 }] },
+      { cwd: process.cwd() },
+    );
+    expect(res.ok).toBe(true);
+    expect(res.content).toContain("l2");
+    expect(res.content).toContain("l3");
+    expect(res.content).not.toContain("l1\n");
+    expect(res.content).not.toContain("l4");
+  });
+
+  it("rejects an empty paths array", async () => {
+    const res = await readFilesTool.execute({ paths: [] }, { cwd: process.cwd() });
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe("missing_arg");
+  });
+
+  it("rejects too many files in one batch", async () => {
+    const many = Array.from({ length: 21 }, (_, i) => path.join(tmpDir, `f${i}.txt`));
+    const res = await readFilesTool.execute({ paths: many }, { cwd: process.cwd() });
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe("too_many");
+  });
+});
+
 // ---- write_file + edit_file tools ----
 import { writeFileTool } from "../src/tools/write_file.ts";
 import { editFileTool } from "../src/tools/edit_file.ts";

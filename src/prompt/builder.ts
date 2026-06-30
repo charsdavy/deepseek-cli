@@ -46,8 +46,12 @@ inside the user's terminal at their project working directory.`;
 const TOOL_BLOCK = `## Tools
 You have the following tools. Pick the most specific one for each job.
 
-- read_file — inspect a file before editing. Read once with enough context
+- read_file — inspect ONE file before editing. Read once with enough context
   rather than many tiny 30-line slices.
+- read_files — BATCH-read 2+ files in one call. STRONGLY PREFERRED over issuing
+  several read_file calls when you need multiple files: it collapses round-trips
+  and is the single biggest latency win for "read code, then answer" tasks.
+  Each file comes back in its own <file> section with the same line numbers.
 - write_file — CREATE a brand-new file, or fully overwrite an existing one.
   Never use it when edit_file would do.
 - edit_file — exact string replacement. ALWAYS read_file first. If oldString
@@ -72,7 +76,12 @@ When a tool call returns, READ the result carefully before the next step —
 do not blindly act on assumptions.`;
 
 const BEHAVIOR_BLOCK = `## Proactive behavior
-- For non-trivial tasks (≥3 steps), call todo_write FIRST to plan.
+- For non-trivial tasks (≥3 steps that change code), call todo_write FIRST to plan.
+- For READ-ONLY tasks (read code, explain, propose a solution, answer a
+  question) do NOT call todo_write — just read the relevant files and answer.
+  Spawning a todo list for a pure "read and explain" task wastes an iteration.
+- When you need 2+ files to answer, call read_files ONCE (batch) instead of
+  several read_file calls across turns. This is the highest-leverage speed win.
 - After editing code, run the project's lint + typecheck + tests before
   claiming success. NEVER say "done" without verifying.
 - Mimic existing repo conventions: read neighbouring files and
