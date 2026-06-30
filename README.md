@@ -77,6 +77,7 @@ deepseek config                                 # show merged config
 | `/help`          | Show available commands                                  |
 | `/exit`          | Quit the session                                         |
 | `/clear`         | Wipe conversation history (system prompt retained)      |
+| `/btw <question>`| Ask a throwaway side question; main session is untouched and nothing is saved |
 | `/model [name]`  | Setup wizard: model → effort → context (or `/model <id>` quick switch) |
 | `/reasoning [on|off\|effort high\|max]` | Show/set thinking default + intensity                          |
 | `/context [tokens]` | Show/set the context-trim budget                              |
@@ -180,6 +181,10 @@ deepseek skill create tdd
 ```
 
 Two ways to use a skill: `/skill` → pick → the prompt pre-fills `/<skill> ` so you continue typing the task inline; or type `/<skill> <task>` directly. On submit the skill is activated (folded into the system prompt for the turn) and the task runs under it. Builtin slash commands (`/model`, `/skill`, …) are never shadowed by a same-named skill.
+
+### `/btw` — side question without disturbing the main thread
+
+Mid-session you often want to ask a quick clarifying question ("what's the syntax for X again?") without polluting the conversation that's actually solving your task. `/btw <question>` spawns a fresh side conversation that carries the live system prompt(s) but starts from a clean message list. The answer renders inline below a `btw — side question` marker; when it finishes, control returns to the main REPL with the original messages and token counts untouched. Side turns are capped at 10 iterations and never persist to a session file. Double-tap Esc still aborts them.
 
 > `deepseek init` scaffolds an `AGENTS.md` template (repo-level instructions); skills are the per-session, toggleable complement.
 

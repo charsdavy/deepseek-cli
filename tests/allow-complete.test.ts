@@ -93,6 +93,7 @@ describe("/allow slash command", () => {
         clear: () => { cleared = true; allowed = []; },
       },
       prefillHolder: { value: "" },
+      runSideTurn: async () => {},
     };
   }
 

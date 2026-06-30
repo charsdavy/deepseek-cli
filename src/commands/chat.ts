@@ -201,6 +201,51 @@ export async function runChat(args: ChatArgs): Promise<void> {
     }
   };
 
+  // `/btw <q>` side-turn driver. Runs a fresh, throwaway conversation with
+  // the live model/tools/system-prompt(s) but does NOT touch the main
+  // session's messages or token usage, and does NOT persist. So you can ask
+  // a clarifying question mid-session and return to the main thread with the
+  // context intact. Visible to the user (unlike spawnAgent, which is silent).
+  const runSideTurn = async (prompt: string): Promise<void> => {
+    printSeparator();
+    printSystem(`${symbol.robot} btw — side question (main session untouched)`, "magenta");
+
+    // Carry only the system-prompt messages; drop the user/assistant thread
+    // so the model isn't biased by the running conversation.
+    const sideMessages: ChatMessage[] = [
+      ...session.messages.filter((m) => m.role === "system"),
+      { role: "user", content: await expandFileRefs(prompt, cwd) },
+    ];
+    const sideSession: Session = {
+      id: newSessionId(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      model,
+      cwd: session.cwd,
+      messages: sideMessages,
+    };
+
+    // Cap iterations so a runaway side turn can't dominate the REPL.
+    const sideMaxIter = Math.min(maxIterations ?? 30, 10);
+    const turn = beginTurn();
+    try {
+      await driveTurn(sideSession, {
+        apiKey, model, reasoning, temperature, maxTokens,
+        maxIterations: sideMaxIter,
+        baseUrl, reasoningEffort, maxContext,
+        tools, permissions, toolCtx,
+        signal: turn.controller.signal,
+        spawnAgent,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      printError(`btw turn failed: ${msg}`);
+    } finally {
+      turn.stop();
+    }
+    printSystem("btw done — back to main session", "magenta");
+  };
+
   // Skills API handed to the /skill slash command — encapsulates discovery,
   // activation, and prompt rebuild so the handler stays self-contained.
   const skillsApi = {
@@ -459,7 +504,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
           }
           continue;
         }
-        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi, reasoning: { get: () => reasoning, set: setReasoning }, effort: { get: () => reasoningEffort, set: setReasoningEffort }, context: { get: () => maxContext, set: setMaxContext }, permissions: permsApi, prefillHolder });
+        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi, reasoning: { get: () => reasoning, set: setReasoning }, effort: { get: () => reasoningEffort, set: setReasoningEffort }, context: { get: () => maxContext, set: setMaxContext }, permissions: permsApi, prefillHolder, runSideTurn });
         if (prefillHolder.value) { prefill = prefillHolder.value; prefillHolder.value = ""; }
         if (handled === "exit") break;
         continue;
@@ -696,6 +741,10 @@ export interface SlashCtx {
   /** Lets a slash command (e.g. /skill picker) request the next prompt be
    *  pre-filled with the given text (e.g. "/skillname "). */
   prefillHolder: { value: string };
+  /** `/btw <q>` — run a throwaway side turn with its own context; the
+   *  main session's messages + token usage are not touched and nothing is
+   *  persisted. The side turn renders to stdout so the user sees the answer. */
+  runSideTurn: (prompt: string) => Promise<void>;
 }
 
 /** Permission API handed to the /allow slash command. */
@@ -816,6 +865,17 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
       session.messages = session.messages.filter((m) => m.role === "system");
       printSystem(`${symbol.trash} context cleared`, "yellow");
       return "continue";
+    case "btw": {
+      // /btw <question> — ask a throwaway side question without disturbing
+      // the main session's history. runSideTurn drives its own context.
+      const q = rest.join(" ").trim();
+      if (!q) {
+        printError("usage: /btw <question>  (ask a side question, keep main session intact)");
+        return "continue";
+      }
+      await ctx.runSideTurn(q);
+      return "continue";
+    }
     case "model": {
       const target = rest[0];
       if (!target) {
@@ -1122,7 +1182,7 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
 
 // Slash command names (incl. aliases) for Tab completion in the REPL.
 export const SLASH_COMMANDS = [
-  "help", "?", "exit", "quit", "q", "clear", "model", "reasoning", "thinking",
+  "help", "?", "exit", "quit", "q", "clear", "btw", "model", "reasoning", "thinking",
   "context", "allow", "log", "new", "skill", "mcp", "tokens", "size", "tools",
   "system", "save", "undo", "retry", "export", "sessions", "history",
 ];
@@ -1155,6 +1215,7 @@ function printSlashHelp(): void {
     ["/help", "show this help"],
     ["/exit", "exit the session"],
     ["/clear", "wipe conversation history (keep system prompt)"],
+    ["/btw <question>", "ask a side question without disturbing the main session"],
     ["/model [name]", "arrow-key model picker, or switch to a specific id"],
     ["/reasoning [on|off|effort high|max]", "show/set thinking default + intensity"],
     ["/context [tokens]", "show/set the context-trim budget"],

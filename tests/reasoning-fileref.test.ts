@@ -30,6 +30,7 @@ function ctx(): SlashCtx {
     mcp: noopMcp as SlashCtx["mcp"],
     permissions: noopPerms,
     prefillHolder: { value: "" },
+    runSideTurn: async () => {},
     reasoning: {
       get: () => reasoningState,
       set: async (on: boolean) => { reasoningState = on; savedToCfg = on; },
