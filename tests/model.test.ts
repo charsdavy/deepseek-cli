@@ -99,3 +99,71 @@ describe("runModelSetupFlow (non-TTY guard)", () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe("runModelSetupFlow logic (injected picks)", () => {
+  function makeCtx(opts: { reasoning: boolean; effort: "high" | "max" | undefined; context: number }) {
+    const calls: string[] = [];
+    const ctx: SlashCtx = {
+      apiKey: "sk-test",
+      model: "deepseek-v4-flash",
+      temperature: 0.7,
+      tools: new ToolRegistry(),
+      setModel: (id: string) => { calls.push(`model:${id}`); },
+      skills: noopSkills as SlashCtx["skills"],
+      mcp: noopMcp as SlashCtx["mcp"],
+      reasoning: { get: () => opts.reasoning, set: async (on: boolean) => { calls.push(`reasoning:${on}`); } },
+      effort: { get: () => opts.effort, set: async (e: "high" | "max") => { calls.push(`effort:${e}`); } },
+      context: { get: () => opts.context, set: async (n: number) => { calls.push(`context:${n}`); } },
+    };
+    return { ctx, calls };
+  }
+
+  it("applies model + effort(max) + context(1M) from explicit picks", async () => {
+    const { ctx, calls } = makeCtx({ reasoning: false, effort: undefined, context: 60000 });
+    const queue = ["deepseek-v4-pro", "max", "1000000"];
+    const pick = async () => queue.shift() ?? null;
+    await runModelSetupFlow(ctx, pick);
+    expect(calls).toEqual([
+      "model:deepseek-v4-pro",
+      "reasoning:true", // max turns reasoning on
+      "effort:max",
+      "context:1000000",
+    ]);
+  });
+
+  it("keep restores the pre-switch reasoning/effort and skips context", async () => {
+    // Pre: reasoning off, effort high. setModel would clobber reasoning on,
+    // so "keep current" must restore reasoning:false + effort:high and not
+    // touch context.
+    const { ctx, calls } = makeCtx({ reasoning: false, effort: "high", context: 60000 });
+    const queue = ["deepseek-v4-pro", "keep", "keep"];
+    const pick = async () => queue.shift() ?? null;
+    await runModelSetupFlow(ctx, pick);
+    expect(calls).toEqual([
+      "model:deepseek-v4-pro",
+      "reasoning:false", // restored (undo the model's default thinking)
+      "effort:high",
+      // context NOT set
+    ]);
+  });
+
+  it("off disables reasoning even when switching to a thinking model", async () => {
+    const { ctx, calls } = makeCtx({ reasoning: true, effort: "max", context: 60000 });
+    const queue = ["deepseek-v4-pro", "off", "keep"];
+    const pick = async () => queue.shift() ?? null;
+    await runModelSetupFlow(ctx, pick);
+    expect(calls).toEqual([
+      "model:deepseek-v4-pro",
+      "reasoning:false",
+      // effort not set when off; context keep → not set
+    ]);
+  });
+
+  it("Esc at the effort step cancels the whole flow (no apply)", async () => {
+    const { ctx, calls } = makeCtx({ reasoning: true, effort: "high", context: 60000 });
+    const queue = ["deepseek-v4-pro", null];
+    const pick = async () => queue.shift() ?? null;
+    await runModelSetupFlow(ctx, pick);
+    expect(calls).toEqual([]);
+  });
+});
