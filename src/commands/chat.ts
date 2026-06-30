@@ -125,6 +125,14 @@ export async function runChat(args: ChatArgs): Promise<void> {
     session.model = id;
     modelInfo = findModel(id);
     reasoning = isReasoningModel(id);
+    // Persist the chosen model + its default reasoning so the next launch
+    // uses the user's most recent selection. (The /reasoning command and the
+    // model wizard's effort/context steps can still override reasoning/effort/
+    // context afterward, and those persist too.) Fire-and-forget: the prompt
+    // rebuild below is synchronous and is what the current turn needs.
+    cfg.defaultModel = id;
+    cfg.reasoning = reasoning;
+    saveConfig(cfg).catch(() => {});
     rebuildSystemPrompt();
   };
 
