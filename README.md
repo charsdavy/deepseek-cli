@@ -60,6 +60,8 @@ deepseek --max-iterations 50 "long refactor"    # raise the agent loop cap
 deepseek --base-url https://proxy.example.com "task"  # self-hosted / proxy endpoint
 deepseek --output-format json --yolo "summarize src/" # machine-readable result for CI
 deepseek init                                   # scaffold an AGENTS.md template
+deepseek mcp add fs npx -y @modelcontextprotocol/server-filesystem /abs  # add an MCP server
+deepseek skill create tdd                       # scaffold a codex-style skill file
 deepseek -c                                     # resume last session
 deepseek sessions                               # list saved sessions
 deepseek config                                 # show merged config
@@ -156,17 +158,12 @@ Skill files are discovered from the deepseek, Claude Code, and Codex directories
 | `<repo>/.codex/skills/<name>.md`          | Codex           |
 
 ```bash
-# create a global skill
-mkdir -p ~/.deepseek-cli/skills
-cat > ~/.deepseek-cli/skills/tdd.md <<'EOF'
-When implementing a feature: write a failing test first, run it, then implement
-until green. Never claim a task is done without a green test run.
-EOF
-
-# then inside the REPL
-/skill            # list skills and show active state (● = active)
-/skill tdd        # toggle the `tdd` skill on
-/skill tdd        # ...and off
+# scaffold a skill (codex-style template: frontmatter + When/Instructions/Examples/Constraints)
+deepseek skill create tdd
+# edit ~/.deepseek-cli/skills/tdd.md, then inside the REPL:
+/skill            # arrow-key picker (↑/↓ · enter) — selecting activates a skill so
+                  # subsequent turns prioritize its instructions; "(none)" clears all
+/skill tdd        # toggle a skill on/off directly
 /skill clear      # deactivate all skills
 ```
 
@@ -174,7 +171,17 @@ EOF
 
 ### MCP (Model Context Protocol)
 
-Connect external MCP servers over stdio; their tools are exposed to the agent as `mcp_<server>_<tool>` and called like any built-in. Configure servers in an `mcp.json` (Claude-Code-compatible shape):
+Connect external MCP servers over stdio; their tools are exposed to the agent as `mcp_<server>_<tool>` and called like any built-in. Configure servers in an `mcp.json` (Claude-Code-compatible shape). Manage it from the CLI — no hand-editing required:
+
+```bash
+deepseek mcp add fs npx -y @modelcontextprotocol/server-filesystem /abs/path
+deepseek mcp add gh npx -y @modelcontextprotocol/server-github --env GITHUB_PERSONAL_ACCESS_TOKEN=ghp_xxx
+deepseek mcp list                       # show configured servers
+deepseek mcp remove gh                  # remove a server
+# add --project to write into <repo>/.mcp.json instead of the global file
+```
+
+The equivalent JSON (for reference):
 
 | Location                       | Scope           |
 | ------------------------------ | --------------- |

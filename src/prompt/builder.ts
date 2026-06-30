@@ -169,7 +169,7 @@ export function buildSystemPrompt(opts: BuildPromptOptions): BuiltPrompt {
       .map((s) => `### skill: ${s.name}\n${s.content.trim()}`)
       .join("\n\n");
     blocks.push(
-      "## Active skills\nThe following skills are enabled. Follow their specialized instructions when relevant to the current task.\n" +
+      "## Active skills\nThe following skills are enabled. Prioritize their specialized instructions for the current task and all subsequent turns until deactivated.\n" +
         body,
     );
   }

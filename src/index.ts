@@ -4,6 +4,8 @@
 import { ArgError, parseArgs, printHelp, printVersion } from "./cli.ts";
 import { runAuthCommand } from "./commands/auth.ts";
 import { runInitCommand } from "./commands/init.ts";
+import { runMcpCommand } from "./commands/mcp.ts";
+import { runSkillCommand } from "./commands/skill.ts";
 import { runSessionsCommand } from "./commands/sessions.ts";
 import { runConfigCommand } from "./commands/config.ts";
 import { runChat } from "./commands/chat.ts";
@@ -34,6 +36,12 @@ async function main(): Promise<void> {
       return;
     case "init":
       await runInitCommand();
+      return;
+    case "mcp":
+      await runMcpCommand(args.mcpArgs ?? []);
+      return;
+    case "skill":
+      await runSkillCommand(args.skillArgs ?? []);
       return;
     case "sessions":
       await runSessionsCommand();

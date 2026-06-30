@@ -7,7 +7,7 @@ import pkg from "../package.json" with { type: "json" };
 export const VERSION = (pkg as { version?: string }).version ?? "0.3.0";
 
 export interface ParsedArgs {
-  command: "chat" | "auth" | "sessions" | "config" | "help" | "version" | "init";
+  command: "chat" | "auth" | "sessions" | "config" | "help" | "version" | "init" | "mcp" | "skill";
   prompt?: string;
   model?: string;
   system?: string;
@@ -23,6 +23,8 @@ export interface ParsedArgs {
   maxTokens?: number;
   outputFormat?: "text" | "json";
   noMcp?: boolean;
+  mcpArgs?: string[];
+  skillArgs?: string[];
   verbose?: boolean;
 }
 
@@ -32,6 +34,8 @@ Usage:
   deepseek [options] [prompt]            Start an interactive session, or run a single prompt
   deepseek auth                          Configure or refresh your DeepSeek API key
   deepseek init                          Scaffold an AGENTS.md project-instructions file
+  deepseek mcp <add|list|remove>         Manage MCP servers in mcp.json
+  deepseek skill create <name>           Scaffold a new skill file
   deepseek sessions                      List saved sessions
   deepseek config                        Show current configuration
 
@@ -77,6 +81,14 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case "config":
       case "init":
         out.command = a;
+        return out;
+      case "mcp":
+        out.command = "mcp";
+        out.mcpArgs = args.slice(i + 1);
+        return out;
+      case "skill":
+        out.command = "skill";
+        out.skillArgs = args.slice(i + 1);
         return out;
       case "-h":
       case "--help":
