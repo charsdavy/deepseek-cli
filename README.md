@@ -350,10 +350,6 @@ Releases are automated through GitHub Actions (`.github/workflows/release.yml`):
 
 The formula template lives at [`.github/scripts/formula.rb.tpl`](./.github/scripts/formula.rb.tpl); edit it there to change bottle/livecheck/caveats behavior.
 
-## License
-
-MIT © [Chars](./LICENSE)
-
 ## Reference
 
 [DeepSeek API Doc](https://api-docs.deepseek.com/zh-cn/)
