@@ -13,6 +13,7 @@ import type { ToolContext, ToolResult } from "../tools/types.ts";
 import { paint, symbol } from "../ui/theme.ts";
 import { blank, printError, printSystem, printToolHeader, streamWrite, writeLine } from "../ui/render.ts";
 import { spinner } from "../ui/spinner.ts";
+import { log } from "../log/logger.ts";
 
 export interface AgentOptions {
   apiKey: string;
@@ -70,9 +71,11 @@ export async function runAgentLoop(
   let lastUsage: TokenUsage | undefined;
 
   const shouldReason = opts.reasoning ?? isReasoningModel(opts.model);
+  log.info("agent loop start", { model: opts.model, reasoning: shouldReason, reasonEffort: opts.reasoningEffort, messages: messagesIn.length, maxIterations });
 
   while (iterations < maxIterations) {
     iterations++;
+    log.debug("iteration", { iteration: iterations });
 
     // Bail out early if the user aborted the turn.
     if (opts.signal?.aborted) {
@@ -140,15 +143,18 @@ export async function runAgentLoop(
     } catch (e) {
       hadApiError = true;
       if (e instanceof DeepSeekUnauthorized) {
+        log.error("api unauthorized", { status: e.status });
         printError(`${e.message} Run \`deepseek auth\` to reconfigure.`);
         throw e;
       }
       // An AbortError means the user interrupted the stream — stop cleanly.
       if (opts.signal?.aborted || (e instanceof Error && e.name === "AbortError")) {
+        log.info("agent loop aborted", { iteration: iterations });
         printSystem("interrupted", "yellow");
         return { messages, iterations, finalText, usage: lastUsage, aborted: true };
       }
       const msg = e instanceof Error ? e.message : String(e);
+      log.error("api error", { error: msg, iteration: iterations, status: (e as { status?: number }).status });
       printError(`API error: ${msg}`);
       // Stop the loop on unrecoverable errors but return partial state.
       break;
@@ -243,15 +249,18 @@ export async function runAgentLoop(
       for (const r of results) {
         opts.onToolEnd?.(r.name, r.result);
         const payload = capToolResult(r.result.content ?? "", r.name);
+        log.info("tool", { name: r.name, ok: r.result.ok, error: r.result.error, contentLen: (r.result.content ?? "").length, summary: r.result.uiSummary });
         messages.push({ role: "tool", tool_call_id: r.id, content: payload });
       }
     }
   }
 
   if (iterations >= maxIterations) {
+    log.warn("max iterations reached", { maxIterations });
     printSystem(`max iterations (${maxIterations}) reached — stopping agent.`, "yellow");
   }
 
+  log.info("agent loop end", { iterations, usage: lastUsage, finalTextLen: finalText.length });
   return { messages, iterations, finalText, usage: lastUsage };
 }
 

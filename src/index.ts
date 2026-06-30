@@ -10,6 +10,7 @@ import { runSessionsCommand } from "./commands/sessions.ts";
 import { runConfigCommand } from "./commands/config.ts";
 import { runChat } from "./commands/chat.ts";
 import { printError } from "./ui/render.ts";
+import { log, type LogLevel } from "./log/logger.ts";
 
 async function main(): Promise<void> {
   let args;
@@ -23,6 +24,20 @@ async function main(): Promise<void> {
     }
     throw e;
   }
+
+  // File logging: `--verbose` raises to debug; `--log-level` overrides;
+  // `--no-log` disables. Initialized before dispatch so every subcommand logs.
+  const level: LogLevel =
+    args.logLevel ?? (args.verbose ? "debug" : "info");
+  log.init(level, args.noLog !== true);
+
+  // Capture crashes so users can find them in the log file.
+  process.on("uncaughtException", (e) => {
+    log.error("uncaughtException", { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined });
+  });
+  process.on("unhandledRejection", (e) => {
+    log.error("unhandledRejection", { error: e instanceof Error ? e.message : String(e) });
+  });
 
   switch (args.command) {
     case "help":

@@ -80,6 +80,7 @@ deepseek config                                 # show merged config
 | `/model [name]`  | Arrow-key model picker, or switch to a specific id          |
 | `/reasoning [on|off\|effort high\|max]` | Show/set thinking default + intensity                          |
 | `/context [tokens]` | Show/set the context-trim budget                              |
+| `/log`           | Show the log file path                                  |
 | `/new`           | Start a fresh session — clears context, new id         |
 | `/skill [name]`  | List skills, or toggle a skill on/off                  |
 | `/mcp [name]`    | List MCP servers, or toggle a server's tools           |
@@ -124,6 +125,8 @@ Configuration is read from `~/.deepseek-cli/config.json` (file mode `0600`). Env
 | `--no-mcp`                       | Do not load MCP servers this session                              |
 | `--reasoning-effort <high\|max>` | Thinking intensity (default high; max = deeper/costlier)          |
 | `--max-context <tokens>`         | Operational context-trim budget (default 60000)                   |
+| `--log-level <debug\|info\|warn\|error>` | File log level (default info; --verbose=debug)            |
+| `--no-log`                       | Disable file logging entirely                              |
 | `--verbose`                      | Verbose logging                                                    |
 
 > During a turn, **Ctrl-C** aborts the in-flight request cleanly; a second Ctrl-C force-quits.
@@ -232,6 +235,22 @@ Reference files inline with `@path` (relative to cwd); their contents are attach
 
 The REPL keeps prompt history in `~/.deepseek-cli/history`; press **Up/Down** at an empty prompt to recall previous inputs across sessions. `/reasoning on|off` toggles the thinking default and persists it for future sessions.
 
+## Logging & troubleshooting
+
+Diagnostic events are written as JSON lines to `~/.deepseek-cli/logs/deepseek-YYYY-MM-DD.log` (daily rotation, 7-day retention, 5 MB size cap). This is the first place to look when a turn errors, an MCP server won't connect, or the agent loops. **Sensitive data is redacted** before write — API keys (`sk-…`/`ghp_…`) are masked and secret-named fields (`apiKey`/`token`/`Authorization`/…) become `***`.
+
+```bash
+deepseek                    # logs at info by default
+deepseek --verbose "…"      # debug level (request sizes, per-iteration trace)
+deepseek --log-level debug  # explicit
+deepseek --no-log           # disable file logging
+tail -f ~/.deepseek-cli/logs/deepseek-*.log
+# inside the REPL:
+/log                        # prints the current log file path
+```
+
+What's logged (info): startup (model/cwd/flags), each agent-loop start/end + token usage, every tool call (name/ok/length/summary — not full args), API errors (status + message), MCP connect/fail, and uncaught crashes. Attach the day's log to bug reports — it's safe to share.
+
 ## Architecture
 
 ```
@@ -279,6 +298,8 @@ src/
 ├── config/
 │   ├── config.ts         # layered config + auth flow
 │   └── instructions.ts   # AGENTS.md / .cursorrules loader
+├── log/
+│   └── logger.ts         # file logger w/ daily rotation + secret redaction
 └── commands/
     ├── chat.ts           # default chat command (one-shot + REPL + slash cmds + json mode)
     ├── auth.ts           # auth subcommand

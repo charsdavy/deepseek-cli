@@ -23,6 +23,8 @@ export interface ParsedArgs {
   maxTokens?: number;
   outputFormat?: "text" | "json";
   noMcp?: boolean;
+  logLevel?: "debug" | "info" | "warn" | "error";
+  noLog?: boolean;
   reasoningEffort?: "high" | "max";
   maxContext?: number;
   mcpArgs?: string[];
@@ -60,6 +62,8 @@ Options:
       --no-mcp                           Do not load MCP servers this session
       --reasoning-effort <high|max>      Thinking intensity (default high; max = deeper)
       --max-context <tokens>             Operational context-trim budget (default 60000)
+      --log-level <debug|info|warn|error> File log level (default info; --verbose=debug)
+      --no-log                           Disable file logging entirely
       --verbose                          Verbose logging
   -h, --help                             Show this help
   -V, --version                          Print version
@@ -164,6 +168,17 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case "--max-context":
         out.maxContext = Number(args[++i]);
         break;
+      case "--log-level": {
+        const v = args[++i] as string;
+        if (v !== "debug" && v !== "info" && v !== "warn" && v !== "error") {
+          throw new ArgError(`--log-level must be debug|info|warn|error, got: ${v}`);
+        }
+        out.logLevel = v;
+        break;
+      }
+      case "--no-log":
+        out.noLog = true;
+        break;
       case "--temperature":
         out.temperature = Number(args[++i]);
         break;
@@ -173,7 +188,6 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case "--verbose":
         out.verbose = true;
         break;
-
       default:
         if (a.startsWith("-")) {
           throw new ArgError(`unknown option: ${a}`);
