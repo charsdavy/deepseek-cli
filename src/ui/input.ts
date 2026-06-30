@@ -94,84 +94,174 @@ export async function askYesNo(prompt: string, defaultValue = false): Promise<bo
   return ans === "y" || ans === "yes";
 }
 
-/** Read input that may span multiple lines via `\\` continuation or ``` fences.
- *  Pass `historySeed` (newest-first) to enable Up/Down recall of past prompts.
- *  Pass `completer` to-enable Tab completion (e.g. slash commands when the line
- *  starts with `/`). */
+/** Visible width of a string (ANSI stripped; emoji/CJK = 2, else 1). */
+function visWidth(s: string): number {
+  const stripped = s.replace(/\x1b\[[0-9;]*m/g, "");
+  let w = 0;
+  for (const ch of stripped) {
+    const c = ch.codePointAt(0) ?? 0;
+    if (c >= 0x1F000 || (c >= 0x2600 && c <= 0x27BF)) w += 2; // emoji-ish
+    else if (c >= 0x1100 && c <= 0xFAFF) w += 2; // CJK / Hangul
+    else if (c >= 0x20) w += 1;
+  }
+  return w;
+}
+
+/** Read input (single- or multi-line). When the current line starts with `/`,
+ *  matching slash commands are listed LIVE below the prompt and updated as the
+ *  user types. Tab completes to the common prefix; Up/Down recall history;
+ *  backslash/```-fence continue across lines. */
 export async function askMultiline(
   prompt: string,
   historySeed?: string[],
-  completer?: (line: string, cb: (err: null, result: [string[], string]) => void) => void,
+  suggest?: (line: string) => string[],
   initial?: string,
 ): Promise<string> {
-  const r = getRl();
-  if (completer) (r as unknown as { completer: (line: string, cb: (err: null, result: [string[], string]) => void) => void }).completer = completer;
-  if (historySeed && historySeed.length > 0) {
-    // readline expects index 0 = most recent; seed a copy so its in-session
-    // mutations don't touch our source array.
-    (r as unknown as { history: string[] }).history = historySeed.slice(0, 500);
+  const tty = input as unknown as NodeJS.ReadStream & { isTTY?: boolean; isRaw?: boolean; setRawMode?: (m: boolean) => void };
+  const isTTY = tty.isTTY === true && output.isTTY === true;
+  // Non-TTY (pipe/CI): fall back to a plain single-line read.
+  if (!isTTY) {
+    output.write(prompt);
+    const lineRl = readline.createInterface({ input: tty, output: undefined as unknown as NodeJS.WritableStream, terminal: false });
+    try {
+      return await new Promise<string>((resolve) => {
+        lineRl.once("line", (l: string) => resolve((initial ?? "") + l));
+      });
+    } finally {
+      lineRl.close();
+    }
   }
-  // Hand the whole prompt (incl. the 👤 glyph) to readline via setPrompt/prompt
-  // so it OWNS the input region: Backspace stops at the input start and can't
-  // erase the prompt, and a redraw (e.g. Up/Down history recall) re-emits the
-  // glyph. Previously a raw output.write(prompt) left readline unaware of the
-  // prompt, so clearing the line ate the 👤.
-  r.setPrompt(prompt);
-  r.prompt();
-  // Pre-fill the line (e.g. "/skillname " after a /skill pick) so the user can
-  // continue typing the task inline.
-  if (initial) r.write(initial);
 
-  return await new Promise<string>((resolve) => {
-    let acc = "";
-    let inFence = false;
-    let promptShown = true;
+  const savedRaw = tty.isRaw ?? false;
+  tty.setRawMode?.(true);
+  tty.resume();
 
-    const onLine = (line: string) => {
-      const trimmedEnd = line.replace(/\s+$/, "");
-      const fenceMatch = trimmedEnd.match(/^```/);
-      if (fenceMatch) {
-        acc += trimmedEnd + "\n";
-        if (inFence) {
-          // Closing fence -> submit the whole block
-          cleanup();
-          resolve(acc.replace(/\s+$/, ""));
-          return;
-        }
-        inFence = true;
-        showPrompt();
-        return;
-      }
-      if (inFence) {
-        acc += line + "\n";
-        showPrompt();
-        return;
-      }
-      // Backslash continuation
-      if (trimmedEnd.endsWith("\\")) {
-        acc += trimmedEnd.slice(0, -1) + "\n";
-        showPrompt();
-        return;
-      }
-      // Single-line submission
-      acc += line;
-      cleanup();
-      resolve(acc);
-    };
+  const hist = historySeed ? historySeed.slice(0, 500) : [];
+  let histIdx = -1; // -1 = not browsing history
+  let buf = initial ?? "";
+  let cur = buf.length;
+  let curPrompt = prompt;
+  let fence = false;
+  let acc = "";
+  let overlayRows = 0; // lines drawn below the current input row (suggestions)
+  let resolved = false;
 
-    function showPrompt(): void {
-      const cont = paint.gray("› ");
-      output.write(cont);
-      promptShown = true;
+  const matches = (): string[] => {
+    if (!buf.startsWith("/") || !suggest) return [];
+    const m = suggest(buf);
+    // Cap to keep the overlay on one row.
+    return m.slice(0, 12);
+  };
+
+  const render = (): void => {
+    // Clear the current line and everything below it (overlay), then redraw.
+    output.write(`\r\x1b[J`);
+    output.write(curPrompt + buf);
+    const m = matches();
+    if (m.length > 0) {
+      output.write(`\n\x1b[K${paint.dim(m.join("  "))}`);
+      overlayRows = 1;
+      output.write(`\x1b[A`); // back up to the input row
+    } else {
+      overlayRows = 0;
     }
+    // Position the cursor at cur on the input row.
+    output.write(`\r`);
+    const col = visWidth(curPrompt) + visWidth(buf.slice(0, cur));
+    if (col > 0) output.write(`\x1b[${col}C`);
+  };
 
-    function cleanup(): void {
-      r.off("line", onLine);
-      void promptShown;
+  const cleanup = (): void => {
+    tty.off("data", onData);
+    if (overlayRows > 0) output.write(`\r\x1b[J`); // erase the suggestions row
+    tty.setRawMode?.(savedRaw);
+  };
+
+  const tabComplete = (): void => {
+    const m = matches();
+    if (m.length === 0) return;
+    // Extend buf to the longest common prefix of the matches.
+    let p = m[0];
+    for (const c of m) {
+      while (!c.startsWith(p)) p = p.slice(0, -1);
     }
+    if (p.length > buf.length) { buf = p; cur = buf.length; render(); }
+  };
 
-    r.on("line", onLine);
-  });
+  const submitLine = (full: string): void => {
+    if (resolved) return;
+    resolved = true;
+    cleanup();
+    resolveFn(full);
+  };
+
+  let resolveFn!: (s: string) => void;
+  const done = new Promise<string>((res) => { resolveFn = res; });
+
+  const onData = (data: Buffer): void => {
+    const b0 = data[0];
+    // Escape sequences (arrows / delete / home / end).
+    if (b0 === 0x1b) {
+      if (data.length >= 3 && data[1] === 0x5b) {
+        const c = data[2];
+        if (c === 0x41 && !fence) { // up — history older
+          if (hist.length && histIdx < hist.length - 1) { histIdx++; buf = hist[histIdx] ?? ""; cur = buf.length; }
+        } else if (c === 0x42 && !fence) { // down — history newer
+          if (histIdx > 0) { histIdx--; buf = hist[histIdx] ?? ""; cur = buf.length; }
+          else { histIdx = -1; buf = ""; cur = 0; }
+        } else if (c === 0x43) { cur = Math.min(buf.length, cur + 1); } // right
+        else if (c === 0x44) { cur = Math.max(0, cur - 1); } // left
+        else if (c === 0x48 || c === 0x46) { cur = c === 0x48 ? 0 : buf.length; } // home/end
+      }
+      render();
+      return;
+    }
+    if (b0 === 0x0d || b0 === 0x0a) { // enter
+      handleEnter();
+      return;
+    }
+    if (b0 === 0x7f || b0 === 0x08) { // backspace
+      if (cur > 0) { buf = buf.slice(0, cur - 1) + buf.slice(cur); cur--; }
+      histIdx = -1;
+      render();
+      return;
+    }
+    if (b0 === 0x03) { submitLine(""); return; } // ctrl-c → empty (cancel line)
+    if (b0 === 0x09) { tabComplete(); return; } // tab
+    if (b0 < 0x20) { render(); return; } // other control: ignore
+    // Printable (UTF-8 ok): insert at cursor.
+    const s = data.toString("utf-8");
+    buf = buf.slice(0, cur) + s + buf.slice(cur);
+    cur += s.length;
+    histIdx = -1;
+    render();
+  };
+
+  const handleEnter = (): void => {
+    const trimmedEnd = buf.replace(/\s+$/, "");
+    const fenceMatch = trimmedEnd.match(/^```/);
+    if (fenceMatch) {
+      acc += trimmedEnd + "\n";
+      if (fence) { submitLine(acc.replace(/\s+$/, "")); return; }
+      fence = true;
+      buf = ""; cur = 0;
+      output.write("\n"); curPrompt = paint.gray("› "); render();
+      return;
+    }
+    if (fence) { acc += buf + "\n"; buf = ""; cur = 0; output.write("\n"); curPrompt = paint.gray("› "); render(); return; }
+    if (trimmedEnd.endsWith("\\")) {
+      acc += trimmedEnd.slice(0, -1) + "\n";
+      buf = ""; cur = 0;
+      output.write("\n"); curPrompt = paint.gray("› "); render();
+      return;
+    }
+    submitLine(acc + buf);
+  };
+
+  tty.on("data", onData);
+  // Initial draw.
+  render();
+  return done;
 }
 
 export function closeReadline(): void {

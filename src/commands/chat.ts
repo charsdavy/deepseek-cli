@@ -323,11 +323,6 @@ export async function runChat(args: ChatArgs): Promise<void> {
 
   let firstPrompt = true;
   const history = await loadHistory();
-  // Tab completion for slash commands: when the line starts with "/", offer
-  // matching command names (real-time candidate list on ambiguous Tab).
-  const slashCompleter = (line: string, cb: (err: null, result: [string[], string]) => void) => {
-    cb(null, [completeSlash(line), line]);
-  };
   // Pre-fill carrier between a slash command (e.g. /skill picker) and the next
   // prompt, so the chosen "/skillname " shows in the input area for inline task
   // entry.
@@ -343,7 +338,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
         input = await askMultiline(
           `${paint.bold(paint.bright.cyan(`${symbol.user}`))} ${paint.gray("›")} `,
           history,
-          slashCompleter,
+          completeSlash, // live slash-command suggestions + Tab completion
           prefill || undefined,
         );
         prefill = "";
