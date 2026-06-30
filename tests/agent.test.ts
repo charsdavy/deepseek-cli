@@ -214,4 +214,59 @@ describe("runAgentLoop", () => {
       globalThis.fetch = origFetch;
     }
   });
+
+  it("flushes a newline between streamed content and the ⏺ tool header", async () => {
+    // Regression: when the model streams non-newline-terminated content and
+    // then emits tool calls in the same turn, the ⏺ tool header marker must
+    // start at column 0 — not glue onto the trailing content line.
+    const tools = registryWith(echoTool);
+    const perms = new PermissionManager({ mode: "auto" });
+
+    const r1 = sseResponse([
+      sseData({ choices: [{ delta: { content: "Let me read the exact code sections I need to modify." } }] }),
+      sseData({
+        choices: [{
+          delta: {
+            tool_calls: [{ index: 0, id: "call_1", function: { name: "echo", arguments: '{"msg":"hi"}' } }],
+          },
+        }],
+      }),
+    ]);
+    const r2 = sseResponse([
+      sseData({ choices: [{ delta: { content: "done" } }] }),
+      "data: [DONE]\n\n",
+    ]);
+
+    // Capture every stdout write so we can assert on the interleave order
+    // between streamed content and the tool header marker.
+    const writes: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((s: unknown) => {
+      writes.push(typeof s === "string" ? s : String(s));
+      return true;
+    }) as typeof process.stdout.write;
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetchSequence([r1, r2]);
+    try {
+      await runAgentLoop(
+        [{ role: "user", content: "echo hi" }],
+        {
+          apiKey: "sk-test",
+          model: "deepseek-chat",
+          tools,
+          permissions: perms,
+          onContentDelta: (d) => process.stdout.write(d),
+        },
+      );
+    } finally {
+      process.stdout.write = origWrite;
+      globalThis.fetch = origFetch;
+    }
+
+    const out = writes.join("");
+    // The streamed content was followed by a newline, THEN the ⏺ marker —
+    // the marker never glues onto the trailing content line.
+    expect(out).toContain("Let me read the exact code sections I need to modify.\n⏺");
+  });
 });

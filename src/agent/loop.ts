@@ -232,6 +232,13 @@ export async function runAgentLoop(
     }
 
     if (pending.length > 0) {
+      // The assistant's streamed content/reasoning may not have ended with a
+      // newline (e.g. "Let me read the file." then tool_calls in the same turn).
+      // Each ⏺ tool header MUST start at column 0 — flush a newline if needed
+      // so the marker never glues onto a trailing content line.
+      const streamed = acc.content || acc.reasoning;
+      if (streamed.length > 0 && !streamed.endsWith("\n")) writeLine();
+
       // Announce all approved calls up front, then run them concurrently.
       for (const p of pending) printToolHeader(p.name, summarizeArgs(p.args));
       const label = pending.length === 1 ? "running tool…" : `running ${pending.length} tools in parallel…`;
