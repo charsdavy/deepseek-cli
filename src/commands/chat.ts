@@ -602,6 +602,67 @@ interface McpApi {
   toolsForServer: (name: string) => Tool[];
 }
 
+// /model setup wizard: a chained arrow-key flow that lets the user pick the
+// model AND its reasoning effort + context budget in one go (Esc cancels the
+// whole flow). Each step defaults to "(keep current)" so a user who only wants
+// to change the model just presses Enter twice more.
+export async function runModelSetupFlow(ctx: SlashCtx): Promise<void> {
+  // 1. model
+  const modelOpts = MODELS.map((m) => ({ label: `${pad(m.id, 20)} ${paint.gray(m.description)}`, value: m.id }));
+  const curModel = modelOpts.findIndex((o) => o.value === ctx.model);
+  const modelId = await selectOption("Select model", modelOpts, Math.max(0, curModel));
+  if (!modelId) { printSystem("model setup cancelled", "yellow"); return; }
+
+  // 2. reasoning effort
+  const curReasoning = ctx.reasoning.get();
+  const curEffort = ctx.effort.get() ?? "high";
+  const effortOpts = [
+    { label: "(keep current)", value: "keep" },
+    { label: "off (disable thinking)", value: "off" },
+    { label: "high (default)", value: "high" },
+    { label: "max (deepest)", value: "max" },
+  ];
+  let eIdx = 0;
+  if (curReasoning && (curEffort === "high" || curEffort === "max")) {
+    eIdx = effortOpts.findIndex((o) => o.value === curEffort);
+  } else if (!curReasoning) {
+    eIdx = effortOpts.findIndex((o) => o.value === "off");
+  }
+  const effort = await selectOption("Reasoning effort", effortOpts, Math.max(0, eIdx));
+  if (effort === null) { printSystem("model setup cancelled", "yellow"); return; }
+
+  // 3. context budget
+  const curCtx = ctx.context.get() ?? 60000;
+  const presets = [
+    { label: "(keep current)", value: "keep" },
+    { label: "60k (default)", value: "60000" },
+    { label: "100k", value: "100000" },
+    { label: "150k", value: "150000" },
+    { label: "500k", value: "500000" },
+    { label: "1M (max)", value: "1000000" },
+  ];
+  const cIdx = presets.findIndex((p) => p.value !== "keep" && Math.abs(Number(p.value) - curCtx) < 5000);
+  const ctxPick = await selectOption("Context budget", presets, Math.max(0, cIdx));
+  if (ctxPick === null) { printSystem("model setup cancelled", "yellow"); return; }
+
+  // Apply (model is session-scoped; effort + context persist as defaults).
+  ctx.setModel(modelId);
+  if (effort === "off") {
+    await ctx.reasoning.set(false);
+  } else if (effort !== "keep") {
+    await ctx.reasoning.set(true);
+    await ctx.effort.set(effort as "high" | "max");
+  }
+  let finalContext = curCtx;
+  if (ctxPick !== "keep") {
+    finalContext = Number(ctxPick);
+    await ctx.context.set(finalContext);
+  }
+
+  const eLabel = effort === "keep" ? (curReasoning ? curEffort : "off") : effort;
+  printSystem(`model ${ctx.model} · reasoning ${eLabel} · context ${finalContext >= 1000 ? `${Math.round(finalContext / 1000)}k` : finalContext}`, "green");
+}
+
 export async function handleSlashCommand(input: string, session: Session, ctx: SlashCtx): Promise<"exit" | "continue"> {
   const trimmed = input.slice(1).trim();
   const [cmd, ...rest] = trimmed.split(/\s+/);
@@ -621,33 +682,22 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
     case "model": {
       const target = rest[0];
       if (!target) {
-        // Interactive arrow-key picker when a TTY is available; otherwise list.
+        // Interactive setup wizard in a TTY: model → reasoning effort → context.
         const isTTY = process.stdin.isTTY === true && process.stdout.isTTY === true;
         if (isTTY) {
-          const opts = MODELS.map((m) => ({
-            label: `${pad(m.id, 20)} ${paint.gray(m.description)}`,
-            value: m.id,
-          }));
-          const cur = opts.findIndex((o) => o.value === session.model);
-          const picked = await selectOption("Select model", opts, Math.max(0, cur));
-          if (picked) {
-            ctx.setModel(picked);
-            const note = isReasoningModel(picked) ? " (reasoning on)" : "";
-            printSystem(`switched model to ${picked}${note}`, "green");
-          } else {
-            printSystem("model switch cancelled", "yellow");
-          }
+          await runModelSetupFlow(ctx);
           return "continue";
         }
         // Non-TTY fallback: plain listing.
         writeLine(paint.gray("available models:"));
         for (const m of MODELS) {
-          const cur = m.id === session.model ? paint.green("← current") : "";
+          const cur = m.id === ctx.model ? paint.green("← current") : "";
           writeLine(`  ${paint.cyan(pad(m.id, 20))} ${paint.gray(m.description)} ${cur}`);
         }
         writeLine(paint.gray("\n/model <name>  — switch (catalog name or any model id)"));
         return "continue";
       }
+      // /model <id>: quick switch, keep current effort/context.
       const known = findModel(target);
       ctx.setModel(target);
       if (known) {
