@@ -233,7 +233,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
         // A subtle rule between turns gives the REPL a Claude-Code-like rhythm.
         if (!firstPrompt) printSeparator();
         firstPrompt = false;
-        input = await askMultiline(`${paint.bold(paint.bright.cyan(`${symbol.user} You`))} ${paint.gray("›")} `);
+        input = await askMultiline(`${paint.bold(paint.bright.cyan(`${symbol.user}`))} ${paint.gray("›")} `);
       } catch {
         break;
       }
@@ -312,7 +312,7 @@ interface TurnDeps {
 }
 
 async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
-  const renderer = makeStreamRenderer({ showReasoning: deps.reasoning === true });
+  const renderer = makeStreamRenderer({ showReasoning: deps.reasoning === true, model: deps.model });
 
   const onToolEnd = (name: string, result: ToolResult) => {
     void name;
