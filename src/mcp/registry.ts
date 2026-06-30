@@ -88,6 +88,34 @@ export class McpRegistry {
     return results;
   }
 
+  /** Spawn + connect one server live (mid-session), bind its tools. */
+  async addServer(name: string, serverCfg: McpServerConfig): Promise<LoadedServer> {
+    // If already connected, close the old instance first.
+    if (this.clients.has(name)) {
+      await this.clients.get(name)!.close().catch(() => {});
+      this.clients.delete(name);
+      this.bound = this.bound.filter((b) => b.serverName !== name);
+      this.disabled.delete(name);
+    }
+    try {
+      const transport = new StdioMcpTransport(serverCfg);
+      await transport.start();
+      const client = new McpClient(name, transport);
+      await client.connect();
+      const tools = await client.listTools();
+      this.clients.set(name, client);
+      for (const t of tools) this.bound.push({ serverName: name, toolDef: t });
+      log.info("mcp connected", { server: name, tools: tools.length });
+      printSystem(`mcp: ${name} connected (${tools.length} tool${tools.length === 1 ? "" : "s"})`, "green");
+      return { name, toolCount: tools.length, ok: true, enabled: true };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      log.error("mcp connect failed", { server: name, error: msg });
+      printSystem(`mcp: ${name} failed to start — ${msg}`, "yellow");
+      return { name, toolCount: 0, ok: false, enabled: false, error: msg };
+    }
+  }
+
   /** All bound tools for enabled servers only (disabled servers are hidden). */
   toTools(): Tool[] {
     const self = this;

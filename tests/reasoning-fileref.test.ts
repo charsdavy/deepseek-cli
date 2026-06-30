@@ -7,7 +7,7 @@ import type { Tool } from "../src/tools/types.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 
 const noopSkills = { list: async () => [], active: () => [], toggle: async () => false, clear: () => {} };
-const noopMcp = { servers: () => [], toggle: () => false, toolsForServer: () => [] as Tool[] };
+const noopMcp = { servers: () => [], toggle: () => false, toolsForServer: () => [] as Tool[], add: async () => ({ ok: false, toolCount: 0 }) };
 const noopPerms = { dangerousTools: () => ["bash"], isAllowed: () => false, allow: () => {}, clear: () => {} };
 
 let reasoningState: boolean;

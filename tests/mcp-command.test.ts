@@ -3,7 +3,7 @@ import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import * as os from "node:os";
-import { runMcpCommand, globalMcpFile } from "../src/commands/mcp.ts";
+import { runMcpCommand, globalMcpFile, parseAddArgs } from "../src/commands/mcp.ts";
 
 const ORIG = process.env.DEEPSEEK_MCP_GLOBAL;
 let tmp: string;
@@ -49,5 +49,26 @@ describe("deepseek mcp command", () => {
   it("list runs without error when no config exists", async () => {
     await runMcpCommand(["list"]);
     expect(existsSync(globalMcpFile())).toBe(false);
+  });
+});
+
+describe("parseAddArgs", () => {
+  it("parses name/command/args/env/project", () => {
+    const p = parseAddArgs(["fs", "npx", "-y", "@x/y", "/abs", "--env", "FOO=bar", "--project"]);
+    expect(p).not.toBeNull();
+    expect(p!.name).toBe("fs");
+    expect(p!.command).toBe("npx");
+    expect(p!.args).toEqual(["-y", "@x/y", "/abs"]);
+    expect(p!.env.FOO).toBe("bar");
+    expect(p!.project).toBe(true);
+  });
+
+  it("returns null when name or command is missing", () => {
+    expect(parseAddArgs([])).toBeNull();
+    expect(parseAddArgs(["onlyname"])).toBeNull();
+  });
+
+  it("returns null on a malformed --env (no =)", () => {
+    expect(parseAddArgs(["fs", "npx", "--env", "NOEQ"])).toBeNull();
   });
 });

@@ -70,7 +70,16 @@ export async function runMcpCommand(args: string[]): Promise<void> {
   }
 }
 
-async function addServer(args: string[]): Promise<void> {
+export interface ParsedMcpAdd {
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  project: boolean;
+}
+
+/** Parse `mcp add <name> <command> [args...] [--env K=V ...] [--project]` args. */
+export function parseAddArgs(args: string[]): ParsedMcpAdd | null {
   let project = false;
   const env: Record<string, string> = {};
   const positional: string[] = [];
@@ -79,32 +88,45 @@ async function addServer(args: string[]): Promise<void> {
     if (a === "--project") { project = true; continue; }
     if (a === "--env" || a === "-e") {
       const kv = args[++i];
-      if (!kv) { printError("--env requires a KEY=VALUE argument"); return; }
+      if (!kv || !kv.includes("=")) return null;
       const eq = kv.indexOf("=");
-      if (eq < 0) { printError(`--env value must be KEY=VALUE, got: ${kv}`); return; }
       env[kv.slice(0, eq)] = kv.slice(eq + 1);
       continue;
     }
     positional.push(a);
   }
-
   const name = positional[0];
   const command = positional[1];
-  if (!name || !command) {
+  if (!name || !command) return null;
+  return { name, command, args: positional.slice(2), env, project };
+}
+
+/** Write a server entry into the (global or project) mcp.json. */
+export async function addServerToConfig(parsed: ParsedMcpAdd): Promise<string> {
+  const file = parsed.project ? projectMcpFile() : globalMcpFile();
+  const data = await readMcpFile(file);
+  data.mcpServers[parsed.name] = {
+    command: parsed.command,
+    args: parsed.args.length ? parsed.args : undefined,
+    env: Object.keys(parsed.env).length ? parsed.env : undefined,
+  };
+  await writeMcpFile(file, data);
+  return file;
+}
+
+async function addServer(args: string[]): Promise<void> {
+  const parsed = parseAddArgs(args);
+  if (!parsed) {
     printError("usage: deepseek mcp add <name> <command> [args...] [--env K=V ...] [--project]");
     return;
   }
-  const cmdArgs = positional.slice(2);
 
-  const file = project ? projectMcpFile() : globalMcpFile();
-  const data = await readMcpFile(file);
-  data.mcpServers[name] = { command, args: cmdArgs.length ? cmdArgs : undefined, env: Object.keys(env).length ? env : undefined };
-  await writeMcpFile(file, data);
+  const file = await addServerToConfig(parsed);
 
   blank();
-  const where = project ? paint.cyan(file) : paint.cyan("~/.deepseek-cli/mcp.json");
-  printSystem(`${paint.green("✓")} added server '${name}' to ${where}`, "green");
-  writeLine(paint.gray(`  ${command} ${(cmdArgs).join(" ")}${project ? "  (project)" : ""}`));
+  const where = parsed.project ? paint.cyan(file) : paint.cyan("~/.deepseek-cli/mcp.json");
+  printSystem(`${paint.green("✓")} added server '${parsed.name}' to ${where}`, "green");
+  writeLine(paint.gray(`  ${parsed.command} ${parsed.args.join(" ")}${parsed.project ? "  (project)" : ""}`));
   blank();
 }
 
