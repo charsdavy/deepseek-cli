@@ -294,23 +294,27 @@ function capToolResult(content: string, toolName: string): string {
 // Streaming render helper for the chat command — wraps the loop with stdout.
 export interface StreamRenderOptions {
   showReasoning: boolean;
+  /** Model id shown as the assistant label instead of a hardcoded brand. */
+  model?: string;
 }
 
 export function makeStreamRenderer(opts: StreamRenderOptions) {
   let started = false;
   let inReasoning = false;
+  const label = opts.model ?? "DeepSeek";
+  const labelLine = () => writeLine(`${paint.bright.green(symbol.robot)} ${paint.bold(paint.green(label))}:`);
   return {
     onContentDelta(delta: string) {
       if (!started) {
         spinner.stop();
         writeLine();
-        writeLine(`${paint.bright.green(symbol.robot)} ${paint.bold(paint.green("DeepSeek"))}:`);
+        labelLine();
         started = true;
         inReasoning = false;
       } else if (inReasoning && opts.showReasoning) {
         // Transition from reasoning trace to final content
         writeLine();
-        writeLine(`${paint.bold(paint.green("DeepSeek"))}:`);
+        labelLine();
         inReasoning = false;
       }
       streamWrite(delta);
