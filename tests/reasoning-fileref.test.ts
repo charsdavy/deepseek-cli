@@ -8,6 +8,7 @@ import { ToolRegistry } from "../src/tools/registry.ts";
 
 const noopSkills = { list: async () => [], active: () => [], toggle: async () => false, clear: () => {} };
 const noopMcp = { servers: () => [], toggle: () => false, toolsForServer: () => [] as Tool[] };
+const noopPerms = { dangerousTools: () => ["bash"], isAllowed: () => false, allow: () => {}, clear: () => {} };
 
 let reasoningState: boolean;
 let savedToCfg: boolean | null;
@@ -27,6 +28,7 @@ function ctx(): SlashCtx {
     setModel: () => {},
     skills: noopSkills as SlashCtx["skills"],
     mcp: noopMcp as SlashCtx["mcp"],
+    permissions: noopPerms,
     reasoning: {
       get: () => reasoningState,
       set: async (on: boolean) => { reasoningState = on; savedToCfg = on; },

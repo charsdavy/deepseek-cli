@@ -23,6 +23,8 @@ export interface PermissionOptions {
 export class PermissionManager {
   private allowCache = new Set<string>();
   private denyCache = new Set<string>();
+  /** Tools allowed for the whole session regardless of args (via /allow). */
+  private allowedTools = new Set<string>();
   private opts: PermissionOptions;
 
   constructor(opts: PermissionOptions) {
@@ -40,11 +42,31 @@ export class PermissionManager {
     if (!tool.isDangerous) {
       return { allow: true };
     }
+    // Per-tool session allow (e.g. /allow bash) wins over the per-signature cache.
+    if (this.allowedTools.has(tool.name)) return { allow: true, persist: true };
     const key = signature(tool.name, args);
     if (this.allowCache.has(key)) return { allow: true };
     if (this.denyCache.has(key)) return { allow: false };
 
     return await this.prompt(tool, args, key);
+  }
+
+  /** Grant session-level always-allow for a whole tool (any args). */
+  allowTool(name: string): void {
+    this.allowedTools.add(name);
+    this.denyCache.delete(name);
+  }
+
+  disallowTool(name: string): void {
+    this.allowedTools.delete(name);
+  }
+
+  isToolAllowed(name: string): boolean {
+    return this.allowedTools.has(name);
+  }
+
+  clearToolAllows(): void {
+    this.allowedTools.clear();
   }
 
   private async prompt(

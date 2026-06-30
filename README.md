@@ -80,6 +80,7 @@ deepseek config                                 # show merged config
 | `/model [name]`  | Setup wizard: model → effort → context (or `/model <id>` quick switch) |
 | `/reasoning [on|off\|effort high\|max]` | Show/set thinking default + intensity                          |
 | `/context [tokens]` | Show/set the context-trim budget                              |
+| `/allow [tool\|all\|reset]` | One-key authorize a tool (e.g. `bash`) for the session |
 | `/log`           | Show the log file path                                  |
 | `/new`           | Start a fresh session — clears context, new id         |
 | `/skill [name]`  | List skills, or toggle a skill on/off                  |
@@ -93,7 +94,7 @@ deepseek config                                 # show merged config
 | `/export [path]` | Dump the transcript to stdout, or to a file             |
 | `/sessions [query]` | List recent sessions (or search by keyword)          |
 
-**Multi-line input**: end a line with `\` for continuation, or wrap a block in triple-backticks (```…```) to submit a multi-line paste.
+**Multi-line input**: end a line with `\` for continuation, or wrap a block in triple-backticks (```…```) to submit a multi-line paste. **Tab** completes slash commands (type `/m` → `/model`/`/mcp`; ambiguous Tab lists matches).
 
 ## Configuration
 

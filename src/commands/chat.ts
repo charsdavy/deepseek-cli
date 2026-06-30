@@ -254,6 +254,14 @@ export async function runChat(args: ChatArgs): Promise<void> {
     toolsForServer: (name: string) => mcp.toolsForServer(name),
   };
 
+  // Permission API for the /allow one-key authorization command.
+  const permsApi: PermsApi = {
+    dangerousTools: () => tools.list().filter((t) => t.isDangerous).map((t) => t.name),
+    isAllowed: (name: string) => permissions.isToolAllowed(name),
+    allow: (name: string) => permissions.allowTool(name),
+    clear: () => permissions.clearToolAllows(),
+  };
+
   const toolCtx: ToolContext = { cwd };
 
   // Per-turn abort holder. SIGINT aborts the active turn; a second SIGINT with
@@ -315,6 +323,11 @@ export async function runChat(args: ChatArgs): Promise<void> {
 
   let firstPrompt = true;
   const history = await loadHistory();
+  // Tab completion for slash commands: when the line starts with "/", offer
+  // matching command names (real-time candidate list on ambiguous Tab).
+  const slashCompleter = (line: string, cb: (err: null, result: [string[], string]) => void) => {
+    cb(null, [completeSlash(line), line]);
+  };
   try {
     while (true) {
       let input: string;
@@ -322,7 +335,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
         // A subtle rule between turns gives the REPL a Claude-Code-like rhythm.
         if (!firstPrompt) printSeparator();
         firstPrompt = false;
-        input = await askMultiline(`${paint.bold(paint.bright.cyan(`${symbol.user}`))} ${paint.gray("›")} `, history);
+        input = await askMultiline(`${paint.bold(paint.bright.cyan(`${symbol.user}`))} ${paint.gray("›")} `, history, slashCompleter);
       } catch {
         break;
       }
@@ -356,7 +369,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
           }
           continue;
         }
-        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi, reasoning: { get: () => reasoning, set: setReasoning }, effort: { get: () => reasoningEffort, set: setReasoningEffort }, context: { get: () => maxContext, set: setMaxContext } });
+        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi, reasoning: { get: () => reasoning, set: setReasoning }, effort: { get: () => reasoningEffort, set: setReasoningEffort }, context: { get: () => maxContext, set: setMaxContext }, permissions: permsApi });
         if (handled === "exit") break;
         continue;
       }
@@ -585,6 +598,15 @@ export interface SlashCtx {
   reasoning: { get: () => boolean; set: (on: boolean) => Promise<void> };
   effort: { get: () => "high" | "max" | undefined; set: (e: "high" | "max") => Promise<void> };
   context: { get: () => number | undefined; set: (n: number) => Promise<void> };
+  permissions: PermsApi;
+}
+
+/** Permission API handed to the /allow slash command. */
+interface PermsApi {
+  dangerousTools: () => string[];
+  isAllowed: (name: string) => boolean;
+  allow: (name: string) => void;
+  clear: () => void;
 }
 
 /** Skills API handed to the slash handler (built in runChat). */
@@ -856,6 +878,36 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
       printError("usage: /reasoning on|off|effort high|max");
       return "continue";
     }
+    case "allow": {
+      const arg = rest[0]?.toLowerCase();
+      const dangerous = ctx.permissions.dangerousTools();
+      if (!arg) {
+        writeLine(paint.gray("dangerous tools (● = session-allowed, no prompt):"));
+        for (const n of dangerous) {
+          const mark = ctx.permissions.isAllowed(n) ? paint.green("●") : paint.gray("○");
+          writeLine(`  ${mark} ${n}`);
+        }
+        writeLine(paint.gray("\n/allow bash · /allow all · /allow reset"));
+        return "continue";
+      }
+      if (arg === "reset" || arg === "off" || arg === "clear") {
+        ctx.permissions.clear();
+        printSystem("per-tool allows cleared", "yellow");
+        return "continue";
+      }
+      if (arg === "all") {
+        for (const n of dangerous) ctx.permissions.allow(n);
+        printSystem(`authorized all dangerous tools: ${dangerous.join(", ")}`, "green");
+        return "continue";
+      }
+      if (!dangerous.includes(arg)) {
+        printError(`'${arg}' is not a dangerous tool (try: ${dangerous.join(", ")})`);
+        return "continue";
+      }
+      ctx.permissions.allow(arg);
+      printSystem(`'${arg}' authorized for this session — no more prompts`, "green");
+      return "continue";
+    }
     case "log":
       printSystem(`log file: ${log.filePath}`, "blue");
       return "continue";
@@ -953,6 +1005,19 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
   }
 }
 
+// Slash command names (incl. aliases) for Tab completion in the REPL.
+export const SLASH_COMMANDS = [
+  "help", "?", "exit", "quit", "q", "clear", "model", "reasoning", "thinking",
+  "context", "allow", "log", "new", "skill", "mcp", "tokens", "size", "tools",
+  "system", "save", "undo", "retry", "export", "sessions", "history",
+];
+
+/** Return slash commands matching the given input line (empty unless /-prefixed). */
+export function completeSlash(line: string): string[] {
+  if (!line.startsWith("/")) return [];
+  return SLASH_COMMANDS.map((c) => "/" + c).filter((c) => c.startsWith(line));
+}
+
 function printSlashHelp(): void {
   blank();
   writeLine(paint.bold("Slash commands:"));
@@ -963,6 +1028,7 @@ function printSlashHelp(): void {
     ["/model [name]", "arrow-key model picker, or switch to a specific id"],
     ["/reasoning [on|off|effort high|max]", "show/set thinking default + intensity"],
     ["/context [tokens]", "show/set the context-trim budget"],
+    ["/allow [tool|all|reset]", "one-key authorize a tool (e.g. bash) for the session"],
     ["/log", "show the log file path"],
     ["/new", "start a fresh session, clearing context"],
     ["/skill [name]", "list skills, or toggle a skill on/off"],
