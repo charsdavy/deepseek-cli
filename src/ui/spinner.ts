@@ -9,7 +9,9 @@ let active: { id: number; text: string; frame: number } | null = null;
 function render(): void {
   if (!active || outputSilent) return;
   const frame = SPINNER_FRAMES[active.frame % SPINNER_FRAMES.length];
-  process.stdout.write(`\r${C.reset}${paint.cyan(frame)} ${paint.gray(active.text)}`);
+  // \r → col 0 · \x1b[0m reset · \x1b[K erase-to-end-of-line so leftover text
+  // from the previous input row can never bleed into the spinner frame.
+  process.stdout.write(`\r${C.reset}\x1b[K${paint.cyan(frame)} ${paint.gray(active.text)}`);
   active.frame++;
 }
 
