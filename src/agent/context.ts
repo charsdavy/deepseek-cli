@@ -5,8 +5,8 @@ import { estimateConversationTokens } from "../api/tokens.ts";
 
 // DeepSeek models generally expose a 64K-128K context window. Pick a safe
 // operational limit and reserve headroom for the next response + tool results.
-const MAX_CONTEXT_TOKENS = 60_000;
-const RESERVED_FOR_REPLY = 8_000;
+const DEFAULT_MAX_CONTEXT_TOKENS = 60_000;
+const DEFAULT_RESERVED_FOR_REPLY = 8_000;
 
 export interface TrimResult {
   messages: ChatMessage[];
@@ -21,9 +21,10 @@ export interface TrimResult {
  * Drops oldest user/assistant pairs first; tool calls are dropped together
  * with the assistant turn that emitted them.
  */
-export function trimToFit(messages: ChatMessage[]): TrimResult {
+export function trimToFit(messages: ChatMessage[], maxContext = DEFAULT_MAX_CONTEXT_TOKENS, reserved = DEFAULT_RESERVED_FOR_REPLY): TrimResult {
+  const budget = maxContext - reserved;
   const tokensBefore = estimateConversationTokens(messages);
-  if (tokensBefore <= MAX_CONTEXT_TOKENS - RESERVED_FOR_REPLY) {
+  if (tokensBefore <= budget) {
     return { messages, droppedTurns: 0, tokensBefore, tokensAfter: tokensBefore };
   }
 
@@ -39,7 +40,7 @@ export function trimToFit(messages: ChatMessage[]): TrimResult {
   for (let i = rest.length - 1; i >= 0; i--) {
     const m = rest[i];
     const t = estimateTokensFor(m);
-    if (keptTokens + t > MAX_CONTEXT_TOKENS - RESERVED_FOR_REPLY) break;
+    if (keptTokens + t > budget) break;
     kept.unshift(m);
     keptTokens += t;
   }
@@ -51,6 +52,13 @@ export function trimToFit(messages: ChatMessage[]): TrimResult {
     tokensBefore,
     tokensAfter: estimateConversationTokens(out),
   };
+}
+
+export function defaultMaxContext(): number {
+  return DEFAULT_MAX_CONTEXT_TOKENS;
+}
+export function defaultReserved(): number {
+  return DEFAULT_RESERVED_FOR_REPLY;
 }
 
 function estimateTokensFor(m: ChatMessage): number {

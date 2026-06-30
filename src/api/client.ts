@@ -59,6 +59,8 @@ export interface ChatOptions {
   tools?: ToolDef[];
   temperature?: number;
   reasoning?: boolean;
+  /** Thinking intensity: "high" (default) or "max" (deeper, costlier). */
+  reasoningEffort?: "high" | "max";
   maxTokens?: number;
   signal?: AbortSignal;
   /** Override the API base URL (e.g. for self-hosted / proxy). Falls back to models.ts BASE_URL. */
@@ -109,6 +111,10 @@ export async function* streamChatCompletion(
   if (opts.reasoning) {
     // DeepSeek-specific extension to enable thinking trace
     body.thinking = { type: "enabled" };
+  }
+  if (opts.reasoningEffort) {
+    // "high" (default) or "max"; the API maps low/medium→high, xhigh→max.
+    body.reasoning_effort = opts.reasoningEffort;
   }
 
   const res = await fetch(`${opts.baseUrl ?? BASE_URL}/v1/chat/completions`, {

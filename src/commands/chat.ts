@@ -40,6 +40,10 @@ export interface ChatArgs {
   maxTokens?: number;
   outputFormat?: "text" | "json";
   noMcp?: boolean;
+  reasoningEffort?: "high" | "max";
+  maxContext?: number;
+  mcpArgs?: string[];
+  skillArgs?: string[];
   verbose?: boolean;
 }
 
@@ -58,6 +62,9 @@ export async function runChat(args: ChatArgs): Promise<void> {
   let reasoning = args.reasoning ?? cfg.reasoning ?? isReasoningModel(model);
   const temperature = args.temperature ?? cfg.temperature;
   const maxTokens = args.maxTokens ?? cfg.maxTokens;
+  // Thinking intensity + context budget: CLI flag wins, else config, else defaults.
+  let reasoningEffort = args.reasoningEffort ?? cfg.reasoningEffort;
+  let maxContext = args.maxContext ?? cfg.maxContext;
   // CLI base-url override wins over config; falls back to config's baseUrl.
   const baseUrl = args.baseUrl ?? cfg.baseUrl;
   // Resolve the permission mode. `--yolo` is shorthand for --approval-mode yolo.
@@ -127,6 +134,18 @@ export async function runChat(args: ChatArgs): Promise<void> {
     rebuildSystemPrompt();
   };
 
+  // Thinking intensity ("high"|"max") and operational context-trim budget.
+  const setReasoningEffort = async (e: "high" | "max"): Promise<void> => {
+    reasoningEffort = e;
+    cfg.reasoningEffort = e;
+    await saveConfig(cfg);
+  };
+  const setMaxContext = async (n: number): Promise<void> => {
+    maxContext = n;
+    cfg.maxContext = n;
+    await saveConfig(cfg);
+  };
+
   // Sub-agent spawner surfaced to the `task` tool. Runs a nested agent loop
   // silently with its own (small) context + iteration budget; multiple `task`
   // calls in one turn run in parallel via the parent loop's Promise.all.
@@ -152,6 +171,8 @@ export async function runChat(args: ChatArgs): Promise<void> {
         apiKey,
         model,
         reasoning,
+        reasoningEffort,
+        maxContext,
         temperature,
         maxTokens,
         maxIterations: 10,
@@ -248,12 +269,12 @@ export async function runChat(args: ChatArgs): Promise<void> {
     try {
       if (args.outputFormat === "json") {
         await runJsonOneShot(session, {
-          apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl,
+          apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
           tools, permissions, toolCtx, prompt: args.prompt, signal: controller.signal, spawnAgent,
         });
       } else {
         await driveTurn(session, {
-          apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl,
+          apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
           tools, permissions, toolCtx, signal: controller.signal, spawnAgent,
         });
       }
@@ -310,7 +331,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
           turnAbort.current = controller;
           try {
             await driveTurn(session, {
-              apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl,
+              apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
               tools, permissions, toolCtx, signal: controller.signal, spawnAgent,
             });
             await saveSession(session);
@@ -322,7 +343,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
           }
           continue;
         }
-        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi, reasoning: { get: () => reasoning, set: setReasoning } });
+        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi, reasoning: { get: () => reasoning, set: setReasoning }, effort: { get: () => reasoningEffort, set: setReasoningEffort }, context: { get: () => maxContext, set: setMaxContext } });
         if (handled === "exit") break;
         continue;
       }
@@ -336,7 +357,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
       turnAbort.current = controller;
       try {
         await driveTurn(session, {
-          apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl,
+          apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
           tools, permissions, toolCtx, signal: controller.signal, spawnAgent,
         });
         await saveSession(session);
@@ -360,6 +381,8 @@ interface TurnDeps {
   apiKey: string;
   model: string;
   reasoning?: boolean;
+  reasoningEffort?: "high" | "max";
+  maxContext?: number;
   temperature?: number;
   maxTokens?: number;
   maxIterations?: number;
@@ -391,6 +414,8 @@ async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
       apiKey: deps.apiKey,
       model: deps.model,
       reasoning: deps.reasoning,
+      reasoningEffort: deps.reasoningEffort,
+      maxContext: deps.maxContext,
       temperature: deps.temperature,
       maxTokens: deps.maxTokens,
       maxIterations: deps.maxIterations,
@@ -464,6 +489,8 @@ interface JsonOneShotDeps {
   toolCtx: ToolContext;
   prompt: string;
   signal?: AbortSignal;
+  reasoningEffort?: "high" | "max";
+  maxContext?: number;
   spawnAgent?: (prompt: string, opts?: { description?: string; cwd?: string }) => Promise<string>;
 }
 
@@ -475,6 +502,8 @@ export async function runJsonOneShot(session: Session, deps: JsonOneShotDeps): P
       apiKey: deps.apiKey,
       model: deps.model,
       reasoning: deps.reasoning,
+      reasoningEffort: deps.reasoningEffort,
+      maxContext: deps.maxContext,
       temperature: deps.temperature,
       maxTokens: deps.maxTokens,
       maxIterations: deps.maxIterations,
@@ -541,6 +570,8 @@ export interface SlashCtx {
   skills: SkillsApi;
   mcp: McpApi;
   reasoning: { get: () => boolean; set: (on: boolean) => Promise<void> };
+  effort: { get: () => "high" | "max" | undefined; set: (e: "high" | "max") => Promise<void> };
+  context: { get: () => number | undefined; set: (n: number) => Promise<void> };
 }
 
 /** Skills API handed to the slash handler (built in runChat). */
@@ -719,7 +750,9 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
     case "thinking": {
       const arg = rest[0]?.toLowerCase();
       if (!arg) {
-        printSystem(`reasoning is ${ctx.reasoning.get() ? paint.green("on") : paint.yellow("off")}`, ctx.reasoning.get() ? "green" : "yellow");
+        const state = ctx.reasoning.get() ? paint.green("on") : paint.yellow("off");
+        const effort = ctx.effort.get() ?? "high";
+        printSystem(`reasoning ${state} · effort ${effort}`, ctx.reasoning.get() ? "green" : "yellow");
         return "continue";
       }
       if (arg === "on" || arg === "true" || arg === "1") {
@@ -732,7 +765,32 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
         printSystem("reasoning off (saved as default)", "yellow");
         return "continue";
       }
-      printError("usage: /reasoning on|off");
+      if (arg === "effort" || arg === "intensity") {
+        const e = rest[1]?.toLowerCase();
+        if (e !== "high" && e !== "max") {
+          printError("usage: /reasoning effort high|max");
+          return "continue";
+        }
+        await ctx.effort.set(e as "high" | "max");
+        printSystem(`reasoning effort set to ${e} (saved)`, "green");
+        return "continue";
+      }
+      printError("usage: /reasoning on|off|effort high|max");
+      return "continue";
+    }
+    case "context": {
+      const arg = rest[0];
+      if (!arg) {
+        printSystem(`context budget: ${ctx.context.get() ?? 60000} tokens`, "blue");
+        return "continue";
+      }
+      const n = Number(arg);
+      if (!Number.isInteger(n) || n < 4000) {
+        printError("usage: /context <tokens>  (minimum 4000)");
+        return "continue";
+      }
+      await ctx.context.set(n);
+      printSystem(`context budget set to ${n} tokens (saved)`, "green");
       return "continue";
     }
     case "tokens":
@@ -822,7 +880,8 @@ function printSlashHelp(): void {
     ["/exit", "exit the session"],
     ["/clear", "wipe conversation history (keep system prompt)"],
     ["/model [name]", "arrow-key model picker, or switch to a specific id"],
-    ["/reasoning [on|off]", "show or set the thinking/reasoning default"],
+    ["/reasoning [on|off|effort high|max]", "show/set thinking default + intensity"],
+    ["/context [tokens]", "show/set the context-trim budget"],
     ["/new", "start a fresh session, clearing context"],
     ["/skill [name]", "list skills, or toggle a skill on/off"],
     ["/mcp [name]", "list MCP servers, or toggle a server's tools"],

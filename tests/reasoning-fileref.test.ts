@@ -31,6 +31,8 @@ function ctx(): SlashCtx {
       get: () => reasoningState,
       set: async (on: boolean) => { reasoningState = on; savedToCfg = on; },
     },
+    effort: { get: () => undefined, set: async () => {} },
+    context: { get: () => undefined, set: async () => {} },
   };
 }
 
