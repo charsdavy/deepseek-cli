@@ -16,7 +16,7 @@ The CLI pairs streaming chat completions with **tool calling** — the model can
 - **Streaming** chat with reasoning trace support (`deepseek-reasoner`).
 - **11 built-in tools**: `read_file`, `write_file`, `edit_file`, `bash`, `glob`, `grep`, `web_fetch`, `git_diff`, `git_status`, `list_dir`, `todo_write`.
 - **MCP support** — connect Model Context Protocol servers (stdio) and use their tools alongside the built-ins; toggle servers per-session with `/mcp`.
-- **Skills** — load specialized instruction packs into the system prompt; pick which are active with `/skill`.
+- **Skills** — load specialized instruction packs from deepseek **and** Claude Code / Codex skill dirs; pick which are active with `/skill`.
 - **Parallel tool execution** — multiple independent tool calls in one turn run concurrently.
 - **Permission system** — dangerous tools (writes, shell) ask for `y/n` approval; `--yolo` / `--approval-mode` skip prompts.
 - **Interruptible** — Ctrl-C aborts the in-flight turn cleanly (a second Ctrl-C force-quits).
@@ -72,7 +72,7 @@ deepseek config                                 # show merged config
 | `/help`          | Show available commands                                  |
 | `/exit`          | Quit the session                                         |
 | `/clear`         | Wipe conversation history (system prompt retained)      |
-| `/model [name]`  | Show or switch the active model (rebuilds the prompt)   |
+| `/model [name]`  | Show models, or switch (catalog name or any model id)   |
 | `/new`           | Start a fresh session — clears context, new id         |
 | `/skill [name]`  | List skills, or toggle a skill on/off                  |
 | `/mcp [name]`    | List MCP servers, or toggle a server's tools           |
@@ -133,12 +133,16 @@ Drop one of these into your repo root and the agent will fold its contents into 
 
 Skills are reusable instruction packs (markdown files) that specialize the agent for a task domain. When a skill is **active**, its contents are appended to the system prompt before your project instructions (so repo rules still win). Activate them per-session with the `/skill` command.
 
-Skill files are discovered from two locations:
+Skill files are discovered from the deepseek, Claude Code, and Codex directories (global + project each); on a name clash the deepseek copy wins. Global dirs honor each tool's relocation env: `DEEPSEEK_SKILLS_DIR`, `CLAUDE_CONFIG_DIR` (→ `~/.claude`), `CODEX_HOME` (→ `~/.codex`).
 
 | Location                                  | Scope           |
 | ----------------------------------------- | --------------- |
-| `~/.deepseek-cli/skills/<name>.md`        | global (user)   |
-| `<repo>/.deepseek/skills/<name>.md`       | project-specific |
+| `~/.deepseek-cli/skills/<name>.md`        | deepseek (user) |
+| `<repo>/.deepseek/skills/<name>.md`       | deepseek (repo) |
+| `~/.claude/skills/<name>.md`              | Claude Code     |
+| `<repo>/.claude/skills/<name>.md`         | Claude Code     |
+| `~/.codex/skills/<name>.md`               | Codex           |
+| `<repo>/.codex/skills/<name>.md`          | Codex           |
 
 ```bash
 # create a global skill
