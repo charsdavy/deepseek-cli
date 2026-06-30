@@ -17,6 +17,12 @@ export interface ToolContext {
   onProgress?: (msg: string) => void;
   // Used by tools to interact with the agent's own state (e.g., todos)
   state?: Record<string, unknown>;
+  /**
+   * Launch a sub-agent for a self-contained subtask and return its final text.
+   * Wired by the chat command when the agent session starts; absent in
+   * contexts that can't spawn nested loops (e.g. unit tests).
+   */
+  spawnAgent?: (prompt: string, opts?: { description?: string; cwd?: string }) => Promise<string>;
 }
 
 export interface ToolResult {

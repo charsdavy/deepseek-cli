@@ -40,6 +40,7 @@ describe("/model slash command", () => {
       },
       skills: noopSkills as SlashCtx["skills"],
       mcp: noopMcp as SlashCtx["mcp"],
+      reasoning: { get: () => false, set: async () => {} },
     };
   });
 

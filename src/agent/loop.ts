@@ -27,6 +27,8 @@ export interface AgentOptions {
   signal?: AbortSignal;
   /** Override API base URL (self-hosted / proxy). */
   baseUrl?: string;
+  /** Optional sub-agent spawner surfaced to tools via ToolContext. */
+  spawnAgent?: (prompt: string, opts?: { description?: string; cwd?: string }) => Promise<string>;
   // UI callbacks (kept here so the loop stays decoupled from stdout specifics)
   onContentDelta?: (delta: string) => void;
   onReasoningDelta?: (delta: string) => void;
@@ -221,6 +223,7 @@ export async function runAgentLoop(
         cwd: opts.cwd ?? process.cwd(),
         onProgress: (m) => spinner.update(m),
         state: toolSharedState,
+        spawnAgent: opts.spawnAgent,
       };
 
       const results = await Promise.all(

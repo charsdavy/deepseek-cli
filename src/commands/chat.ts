@@ -3,10 +3,11 @@
 // the on-screen rendering of streaming output.
 
 import * as path from "node:path";
+import * as fs from "node:fs/promises";
 import type { ChatMessage } from "../api/client.ts";
 import { DEFAULT_MODEL, findModel, isReasoningModel, MODELS } from "../api/models.ts";
 import { estimateConversationTokens } from "../api/tokens.ts";
-import { ensureDirs, getOrSetupApiKey, loadConfig } from "../config/config.ts";
+import { ensureDirs, getOrSetupApiKey, loadConfig, saveConfig } from "../config/config.ts";
 import { loadProjectInstructions } from "../config/instructions.ts";
 import { buildSystemPrompt } from "../prompt/builder.ts";
 import { makeStreamRenderer, runAgentLoop } from "../agent/loop.ts";
@@ -14,10 +15,12 @@ import { PermissionManager } from "../agent/permissions.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import type { Tool, ToolContext, ToolResult } from "../tools/types.ts";
 import { newSession, newSessionId, loadSession, listSessions, searchSessions, saveSession, type Session } from "../session/store.ts";
+import { loadHistory, appendHistory } from "../session/history.ts";
 import { listSkills, readSkill } from "../skills/store.ts";
 import { McpRegistry, loadMcpConfig } from "../mcp/registry.ts";
 import { paint, symbol } from "../ui/theme.ts";
 import { blank, printBordered, printError, printSeparator, printSystem, printTip, setOutputSilent, writeLine } from "../ui/render.ts";
+import { outputSilent } from "../ui/theme.ts";
 import { askMultiline, closeReadline, selectOption } from "../ui/input.ts";
 import { spinner } from "../ui/spinner.ts";
 
@@ -52,7 +55,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
   const cwd = args.cwd ? path.resolve(args.cwd) : process.cwd();
   let model = pickModel(args.model ?? cfg.defaultModel ?? DEFAULT_MODEL);
   let modelInfo = findModel(model);
-  let reasoning = args.reasoning ?? isReasoningModel(model);
+  let reasoning = args.reasoning ?? cfg.reasoning ?? isReasoningModel(model);
   const temperature = args.temperature ?? cfg.temperature;
   const maxTokens = args.maxTokens ?? cfg.maxTokens;
   // CLI base-url override wins over config; falls back to config's baseUrl.
@@ -112,6 +115,57 @@ export async function runChat(args: ChatArgs): Promise<void> {
     modelInfo = findModel(id);
     reasoning = isReasoningModel(id);
     rebuildSystemPrompt();
+  };
+
+  // Toggle reasoning (thinking) for the session AND persist it as the default
+  // for future sessions. Keeps `thinking:{type:"enabled"}` in client.ts; only
+  // the local reasoning flag (which gates that param + the trace display) flips.
+  const setReasoning = async (on: boolean): Promise<void> => {
+    reasoning = on;
+    cfg.reasoning = on;
+    await saveConfig(cfg);
+    rebuildSystemPrompt();
+  };
+
+  // Sub-agent spawner surfaced to the `task` tool. Runs a nested agent loop
+  // silently with its own (small) context + iteration budget; multiple `task`
+  // calls in one turn run in parallel via the parent loop's Promise.all.
+  let subagentDepth = 0;
+  const spawnAgent = async (
+    prompt: string,
+    opts?: { description?: string; cwd?: string },
+  ): Promise<string> => {
+    if (subagentDepth >= 3) throw new Error("max sub-agent depth (3) reached");
+    subagentDepth++;
+    const wasSilent = outputSilent;
+    setOutputSilent(true);
+    try {
+      const subMessages: ChatMessage[] = [
+        {
+          role: "system",
+          content:
+            "You are a focused DeepSeek sub-agent. Complete the assigned subtask with the available tools, then return ONLY the final result — no preamble, no follow-up questions.",
+        },
+        { role: "user", content: prompt },
+      ];
+      const r = await runAgentLoop(subMessages, {
+        apiKey,
+        model,
+        reasoning,
+        temperature,
+        maxTokens,
+        maxIterations: 10,
+        baseUrl,
+        tools,
+        permissions,
+        cwd: opts?.cwd ?? cwd,
+        spawnAgent, // allow further nesting up to the depth cap
+      });
+      return r.finalText;
+    } finally {
+      setOutputSilent(wasSilent);
+      subagentDepth--;
+    }
   };
 
   // Skills API handed to the /skill slash command — encapsulates discovery,
@@ -188,19 +242,19 @@ export async function runChat(args: ChatArgs): Promise<void> {
 
   // ---- One-shot mode ----
   if (args.prompt) {
-    session.messages.push({ role: "user", content: args.prompt });
+    session.messages.push({ role: "user", content: await expandFileRefs(args.prompt, cwd) });
     const controller = new AbortController();
     turnAbort.current = controller;
     try {
       if (args.outputFormat === "json") {
         await runJsonOneShot(session, {
           apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl,
-          tools, permissions, toolCtx, prompt: args.prompt, signal: controller.signal,
+          tools, permissions, toolCtx, prompt: args.prompt, signal: controller.signal, spawnAgent,
         });
       } else {
         await driveTurn(session, {
           apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl,
-          tools, permissions, toolCtx, signal: controller.signal,
+          tools, permissions, toolCtx, signal: controller.signal, spawnAgent,
         });
       }
       await saveSession(session);
@@ -226,6 +280,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
   blank();
 
   let firstPrompt = true;
+  const history = await loadHistory();
   try {
     while (true) {
       let input: string;
@@ -233,7 +288,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
         // A subtle rule between turns gives the REPL a Claude-Code-like rhythm.
         if (!firstPrompt) printSeparator();
         firstPrompt = false;
-        input = await askMultiline(`${paint.bold(paint.bright.cyan(`${symbol.user}`))} ${paint.gray("›")} `);
+        input = await askMultiline(`${paint.bold(paint.bright.cyan(`${symbol.user}`))} ${paint.gray("›")} `, history);
       } catch {
         break;
       }
@@ -256,7 +311,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
           try {
             await driveTurn(session, {
               apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl,
-              tools, permissions, toolCtx, signal: controller.signal,
+              tools, permissions, toolCtx, signal: controller.signal, spawnAgent,
             });
             await saveSession(session);
           } catch (e) {
@@ -267,18 +322,22 @@ export async function runChat(args: ChatArgs): Promise<void> {
           }
           continue;
         }
-        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi });
+        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi, reasoning: { get: () => reasoning, set: setReasoning } });
         if (handled === "exit") break;
         continue;
       }
 
-      session.messages.push({ role: "user", content: trimmed });
+      session.messages.push({ role: "user", content: await expandFileRefs(trimmed, cwd) });
+      // Remember the prompt for Up/Down recall (newest-first) + persist.
+      history.unshift(trimmed);
+      if (history.length > 1000) history.length = 1000;
+      appendHistory(trimmed).catch(() => {});
       const controller = new AbortController();
       turnAbort.current = controller;
       try {
         await driveTurn(session, {
           apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl,
-          tools, permissions, toolCtx, signal: controller.signal,
+          tools, permissions, toolCtx, signal: controller.signal, spawnAgent,
         });
         await saveSession(session);
       } catch (e) {
@@ -309,6 +368,7 @@ interface TurnDeps {
   permissions: PermissionManager;
   toolCtx: ToolContext;
   signal?: AbortSignal;
+  spawnAgent?: (prompt: string, opts?: { description?: string; cwd?: string }) => Promise<string>;
 }
 
 async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
@@ -339,6 +399,7 @@ async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
       permissions: deps.permissions,
       cwd: session.cwd,
       signal: deps.signal,
+      spawnAgent: deps.spawnAgent,
       onContentDelta: (d) => renderer.onContentDelta(d),
       onReasoningDelta: (d) => renderer.onReasoningDelta(d),
       onToolStart: () => true,
@@ -403,6 +464,7 @@ interface JsonOneShotDeps {
   toolCtx: ToolContext;
   prompt: string;
   signal?: AbortSignal;
+  spawnAgent?: (prompt: string, opts?: { description?: string; cwd?: string }) => Promise<string>;
 }
 
 export async function runJsonOneShot(session: Session, deps: JsonOneShotDeps): Promise<void> {
@@ -421,6 +483,7 @@ export async function runJsonOneShot(session: Session, deps: JsonOneShotDeps): P
       permissions: deps.permissions,
       cwd: session.cwd,
       signal: deps.signal,
+      spawnAgent: deps.spawnAgent,
       // No streaming callbacks in JSON mode — we only emit the final blob.
     });
   } finally {
@@ -477,6 +540,7 @@ export interface SlashCtx {
   setModel: (id: string) => void;
   skills: SkillsApi;
   mcp: McpApi;
+  reasoning: { get: () => boolean; set: (on: boolean) => Promise<void> };
 }
 
 /** Skills API handed to the slash handler (built in runChat). */
@@ -651,6 +715,26 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
       }
       return "continue";
     }
+    case "reasoning":
+    case "thinking": {
+      const arg = rest[0]?.toLowerCase();
+      if (!arg) {
+        printSystem(`reasoning is ${ctx.reasoning.get() ? paint.green("on") : paint.yellow("off")}`, ctx.reasoning.get() ? "green" : "yellow");
+        return "continue";
+      }
+      if (arg === "on" || arg === "true" || arg === "1") {
+        await ctx.reasoning.set(true);
+        printSystem("reasoning on (saved as default)", "green");
+        return "continue";
+      }
+      if (arg === "off" || arg === "false" || arg === "0") {
+        await ctx.reasoning.set(false);
+        printSystem("reasoning off (saved as default)", "yellow");
+        return "continue";
+      }
+      printError("usage: /reasoning on|off");
+      return "continue";
+    }
     case "tokens":
     case "size": {
       const t = estimateConversationTokens(session.messages);
@@ -737,7 +821,8 @@ function printSlashHelp(): void {
     ["/help", "show this help"],
     ["/exit", "exit the session"],
     ["/clear", "wipe conversation history (keep system prompt)"],
-    ["/model [name]", "show or switch models (rebuilds prompt)"],
+    ["/model [name]", "arrow-key model picker, or switch to a specific id"],
+    ["/reasoning [on|off]", "show or set the thinking/reasoning default"],
     ["/new", "start a fresh session, clearing context"],
     ["/skill [name]", "list skills, or toggle a skill on/off"],
     ["/mcp [name]", "list MCP servers, or toggle a server's tools"],
@@ -759,6 +844,54 @@ function printSlashHelp(): void {
 
 function pad(s: string, n: number): string {
   return s.length >= n ? s : s + " ".repeat(n - s.length);
+}
+
+/**
+ * Expand @path references in the user's prompt: any `@<path>` token (not an
+ * email) is resolved relative to cwd; the file's contents are appended in a
+ * <referenced_files> block so the model sees the text inline. Missing/non-file
+ * paths are annotated rather than dropped.
+ */
+export async function expandFileRefs(text: string, cwd: string): Promise<string> {
+  // Match @path tokens, but not emails (require start-of-line or whitespace
+  // before @, and no @ inside the path).
+  const re = /(^|\s)@([^\s@]+)/g;
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const raw = m[2];
+    if (seen.has(raw)) continue;
+    seen.add(raw);
+    paths.push(raw);
+  }
+  if (paths.length === 0) return text;
+  const blocks: string[] = [];
+  let attached = 0;
+  for (const raw of paths) {
+    const p = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+    try {
+      const st = await fs.stat(p);
+      if (!st.isFile()) {
+        blocks.push(`<file path="${raw}">(not a file — use list_dir/glob to inspect)`);
+        continue;
+      }
+      if (st.size > 200_000) {
+        blocks.push(`<file path="${raw}">(file too large: ${st.size} bytes — use read_file with offset/limit)`);
+        continue;
+      }
+      const content = await fs.readFile(p, "utf-8");
+      blocks.push(`<file path="${raw}">\n${content}\n</file>`);
+      attached++;
+    } catch {
+      blocks.push(`<file path="${raw}">(not found)`);
+    }
+  }
+  const anyUseful = blocks.some((b) => !b.includes("(not found)") && !b.includes("(not a file"));
+  if (attached === 0 && !anyUseful) {
+    return text; // nothing useful to attach; leave prompt untouched
+  }
+  return `${text}\n\n<referenced_files>\n${blocks.join("\n")}\n</referenced_files>`;
 }
 
 function lastUserIndex(messages: ChatMessage[]): number {

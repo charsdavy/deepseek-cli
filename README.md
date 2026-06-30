@@ -14,9 +14,12 @@ The CLI pairs streaming chat completions with **tool calling** — the model can
 
 - **Agentic tool loop** — model drives the work: read → edit → bash → grep until the task is done.
 - **Streaming** chat with reasoning trace support (`deepseek-reasoner`).
-- **11 built-in tools**: `read_file`, `write_file`, `edit_file`, `bash`, `glob`, `grep`, `web_fetch`, `git_diff`, `git_status`, `list_dir`, `todo_write`.
+- **12 built-in tools**: `read_file`, `write_file`, `edit_file`, `bash`, `glob`, `grep`, `web_fetch`, `git_diff`, `git_status`, `list_dir`, `task`, `todo_write`.
+- **Sub-agents** — the `task` tool spawns nested agent loops; independent subtasks run in **parallel** when issued together.
 - **MCP support** — connect Model Context Protocol servers (stdio) and use their tools alongside the built-ins; toggle servers per-session with `/mcp`.
 - **Skills** — load specialized instruction packs from deepseek **and** Claude Code / Codex skill dirs; pick which are active with `/skill`.
+- **`@file` references** — mention `@path/to/file` in a prompt and its contents are attached inline.
+- **Prompt history** — Up/Down recalls previous prompts (persisted across sessions).
 - **Parallel tool execution** — multiple independent tool calls in one turn run concurrently.
 - **Permission system** — dangerous tools (writes, shell) ask for `y/n` approval; `--yolo` / `--approval-mode` skip prompts.
 - **Interruptible** — Ctrl-C aborts the in-flight turn cleanly (a second Ctrl-C force-quits).
@@ -75,6 +78,7 @@ deepseek config                                 # show merged config
 | `/exit`          | Quit the session                                         |
 | `/clear`         | Wipe conversation history (system prompt retained)      |
 | `/model [name]`  | Arrow-key model picker, or switch to a specific id          |
+| `/reasoning [on|off]` | Show or set the thinking default (persisted)          |
 | `/new`           | Start a fresh session — clears context, new id         |
 | `/skill [name]`  | List skills, or toggle a skill on/off                  |
 | `/mcp [name]`    | List MCP servers, or toggle a server's tools           |
@@ -214,6 +218,17 @@ Servers start when a session begins (best-effort — a failed server is skipped,
 
 Use `--no-mcp` to skip loading servers for a session (e.g. `deepseek --no-mcp`).
 
+### @file references & prompt history
+
+Reference files inline with `@path` (relative to cwd); their contents are attached to the prompt automatically:
+
+```bash
+👤 › explain the bug in @src/auth.ts and @src/api/client.ts
+# → the model sees your text plus both files' contents in a <referenced_files> block
+```
+
+The REPL keeps prompt history in `~/.deepseek-cli/history`; press **Up/Down** at an empty prompt to recall previous inputs across sessions. `/reasoning on|off` toggles the thinking default and persists it for future sessions.
+
 ## Architecture
 
 ```
@@ -241,15 +256,17 @@ src/
 │   ├── git_helpers.ts    # shared spawn-based git runner (no shell)
 │   ├── git_diff.ts       # read-only structured `git diff`
 │   ├── git_status.ts     # read-only structured `git status` (porcelain + branch)
-│   ├── list_dir.ts       # single-level directory listing
-│   └── todo.ts           # in-memory task list the agent can read/update
+│   ├── list_dir.ts      # single-level directory listing
+│   ├── task.ts          # launch a sub-agent (nested agent loop) for a subtask
+│   └── todo.ts          # in-memory task list the agent can read/update
 ├── ui/
 │   ├── theme.ts          # ANSI color helpers, zero dep
 │   ├── render.ts         # markdown, code blocks, panels, system messages
 │   ├── input.ts          # masked password, multi-line, y/n prompts
 │   └── spinner.ts        # interval-based animated spinner
 ├── session/
-│   └── store.ts          # session save / load / list / delete / search / prune
+│   ├── store.ts          # session save / load / list / delete / search / prune
+│   └── history.ts        # prompt history (Up/Down recall, persisted)
 ├── skills/
 │   └── store.ts          # skill discovery + reading (global + project .md files)
 ├── mcp/

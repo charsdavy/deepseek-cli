@@ -28,6 +28,8 @@ export interface CliConfig {
   temperature?: number;
   maxTokens?: number;
   baseUrl?: string;
+  /** Default reasoning/thinking mode for new sessions (toggled via /reasoning). */
+  reasoning?: boolean;
 }
 
 export const DEFAULT_CONFIG: CliConfig = {
@@ -107,6 +109,10 @@ function normalizeConfig(raw: Record<string, unknown>): Partial<CliConfig> {
       dropped.push("approvalMode");
     }
   } else if (raw.approvalMode !== undefined) dropped.push("approvalMode");
+
+  if (typeof raw.reasoning === "boolean") {
+    out.reasoning = raw.reasoning;
+  } else if (raw.reasoning !== undefined) dropped.push("reasoning");
 
   if (dropped.length > 0) {
     printSystem(`Config: ignoring invalid field(s): ${dropped.join(", ")}`, "yellow");

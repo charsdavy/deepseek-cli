@@ -63,6 +63,8 @@ You have the following tools. Pick the most specific one for each job.
   \`bash git diff\` for inspecting uncommitted or ref-to-ref changes.
 - git_status — read-only structured view of \`git status\` (porcelain + branch).
   Prefer this over \`bash git status\` for working-tree state.
+- task — launch a sub-agent for a self-contained subtask; returns its final
+  answer. Issue multiple task calls together to parallelize independent work.
 - todo_write — use proactively when the task has ≥3 steps; keep exactly one
   item in_progress at a time; update statuses as work progresses.
 
