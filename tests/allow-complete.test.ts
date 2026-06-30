@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "bun:test";
-import { completeSlash, handleSlashCommand } from "../src/commands/chat.ts";
+import { completeSlash, handleSlashCommand, parseSlashSkillInvocation } from "../src/commands/chat.ts";
 import { newSession } from "../src/session/store.ts";
 import { setOutputSilent } from "../src/ui/render.ts";
 import type { SlashCtx } from "../src/commands/chat.ts";
@@ -10,6 +10,30 @@ const noopSkills = { list: async () => [], active: () => [], toggle: async () =>
 const noopMcp = { servers: () => [], toggle: () => false, toolsForServer: () => [] as Tool[] };
 
 beforeEach(() => setOutputSilent(true));
+
+describe("parseSlashSkillInvocation", () => {
+  it("parses /<skill> <task> into name + task", () => {
+    expect(parseSlashSkillInvocation("/feedback-system 处理反馈 123")).toEqual({ name: "feedback-system", task: "处理反馈 123" });
+  });
+
+  it("preserves mixed-case skill names", () => {
+    expect(parseSlashSkillInvocation("/Filmly-uikit-dev build a cell")).toEqual({ name: "Filmly-uikit-dev", task: "build a cell" });
+  });
+
+  it("returns null when the first token is a builtin slash command (no shadowing)", () => {
+    expect(parseSlashSkillInvocation("/model deepseek-v4-pro")).toBeNull();
+    expect(parseSlashSkillInvocation("/skill tdd")).toBeNull();
+    expect(parseSlashSkillInvocation("/help")).toBeNull();
+  });
+
+  it("returns empty task when only the skill is given", () => {
+    expect(parseSlashSkillInvocation("/feedback-system")).toEqual({ name: "feedback-system", task: "" });
+  });
+
+  it("returns null for non-slash input", () => {
+    expect(parseSlashSkillInvocation("just typing")).toBeNull();
+  });
+});
 
 describe("completeSlash (Tab completion)", () => {
   it("returns nothing for non-slash input", () => {
@@ -68,6 +92,7 @@ describe("/allow slash command", () => {
         allow: (n: string) => { allowed.push(n); },
         clear: () => { cleared = true; allowed = []; },
       },
+      prefillHolder: { value: "" },
     };
   }
 

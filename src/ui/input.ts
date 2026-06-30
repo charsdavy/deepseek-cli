@@ -102,6 +102,7 @@ export async function askMultiline(
   prompt: string,
   historySeed?: string[],
   completer?: (line: string, cb: (err: null, result: [string[], string]) => void) => void,
+  initial?: string,
 ): Promise<string> {
   const r = getRl();
   if (completer) (r as unknown as { completer: (line: string, cb: (err: null, result: [string[], string]) => void) => void }).completer = completer;
@@ -117,6 +118,9 @@ export async function askMultiline(
   // prompt, so clearing the line ate the 👤.
   r.setPrompt(prompt);
   r.prompt();
+  // Pre-fill the line (e.g. "/skillname " after a /skill pick) so the user can
+  // continue typing the task inline.
+  if (initial) r.write(initial);
 
   return await new Promise<string>((resolve) => {
     let acc = "";

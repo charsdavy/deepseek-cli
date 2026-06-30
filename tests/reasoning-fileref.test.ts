@@ -29,6 +29,7 @@ function ctx(): SlashCtx {
     skills: noopSkills as SlashCtx["skills"],
     mcp: noopMcp as SlashCtx["mcp"],
     permissions: noopPerms,
+    prefillHolder: { value: "" },
     reasoning: {
       get: () => reasoningState,
       set: async (on: boolean) => { reasoningState = on; savedToCfg = on; },
