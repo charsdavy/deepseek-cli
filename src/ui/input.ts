@@ -282,6 +282,100 @@ export async function askMultiline(
   return done;
 }
 
+// ---- Double-Esc turn abort ----
+//
+// During a running AI turn stdin is in cooked mode (askMultiline has restored
+// it on submit), so a lone Escape key would be buffered until Enter. To let
+// the user double-tap Esc to cancel a running turn we briefly take stdin into
+// raw mode for the turn's lifetime and run a small state machine over the
+// incoming bytes. The detection logic is split into a pure reducer so it can
+// be unit-tested without a real TTY.
+
+export const DOUBLE_ESC_WINDOW_MS = 450;
+
+/**
+ * Pure reducer for double-Escape detection. Given the inbound bytes, the
+ * previous Escape timestamp, the current time, and the detection window,
+ * returns the next state: `lastEsc` (0 = disarmed) and `abort` (true when a
+ * double-tap was recognized — caller should fire the abort).
+ *
+ * - A real Escape keypress arrives as a lone `0x1b` (or `0x1b` not followed by
+ *   `[`); arrow keys arrive as `0x1b 0x5b …` (CSI) and are ignored so they
+ *   don't arm the timer.
+ * - First Escape arms the timer (returns `lastEsc = now`).
+ * - Second Escape within the window fires `abort: true`.
+ */
+export function reduceEsc(
+  bytes: Uint8Array,
+  lastEsc: number,
+  now: number,
+  windowMs = DOUBLE_ESC_WINDOW_MS,
+): { lastEsc: number; abort: boolean } {
+  if (bytes.length === 0 || bytes[0] !== 0x1b) {
+    return { lastEsc, abort: false };
+  }
+  // CSI sequence (arrows / home / end / delete): ESC [ … — not a real Esc.
+  if (bytes.length >= 2 && bytes[1] === 0x5b) {
+    return { lastEsc, abort: false };
+  }
+  // Real Escape keypress.
+  if (lastEsc > 0 && now - lastEsc < windowMs) {
+    return { lastEsc: 0, abort: true };
+  }
+  return { lastEsc: now, abort: false };
+}
+
+/**
+ * Install a raw-mode stdin listener that watches for a double-Escape and
+ * invokes `onAbort` when it fires. Returns a cleanup function that detaches
+ * the listener and restores the prior raw mode. No-ops (returns a nop) when
+ * stdin/stdout isn't a TTY, so non-interactive / CI runs are unaffected.
+ */
+export function watchDoubleEsc(onAbort: () => void): () => void {
+  const tty = input as NodeJS.ReadStream & { isTTY?: boolean; isRaw?: boolean; setRawMode?: (m: boolean) => void };
+  if (tty.isTTY !== true || output.isTTY !== true) {
+    return () => {};
+  }
+  const savedRaw = tty.isRaw ?? false;
+  try {
+    tty.setRawMode?.(true);
+  } catch {
+    return () => {};
+  }
+  tty.resume();
+
+  let lastEsc = 0;
+  let armed = true;
+
+  const onData = (data: Buffer): void => {
+    if (!armed) return;
+    const next = reduceEsc(data, lastEsc, Date.now());
+    lastEsc = next.lastEsc;
+    if (next.abort) {
+      armed = false;
+      cleanup();
+      onAbort();
+    } else if (next.lastEsc > 0 && lastEsc === next.lastEsc) {
+      // First tap registered — nudge the user with a one-liner on its own row
+      // so they know a second tap will cancel. Kept minimal to avoid clobbering
+      // streaming output; the spinner / renderer keep writing below it.
+      output.write("\n" + paint.yellow("  (Esc again to cancel)") + "\n");
+    }
+  };
+
+  const cleanup = (): void => {
+    tty.off("data", onData);
+    try {
+      tty.setRawMode?.(savedRaw);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  tty.on("data", onData);
+  return cleanup;
+}
+
 export function closeReadline(): void {
   rl?.close();
   rl = null;

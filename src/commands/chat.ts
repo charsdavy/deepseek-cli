@@ -25,7 +25,7 @@ import { VERSION } from "../cli.ts";
 import { paint, symbol } from "../ui/theme.ts";
 import { blank, printBordered, printError, printSeparator, printSystem, printTip, setOutputSilent, writeLine } from "../ui/render.ts";
 import { outputSilent } from "../ui/theme.ts";
-import { askMultiline, closeReadline, restoreTerminal, selectOption } from "../ui/input.ts";
+import { askMultiline, closeReadline, restoreTerminal, selectOption, watchDoubleEsc } from "../ui/input.ts";
 import { spinner } from "../ui/spinner.ts";
 
 export interface ChatArgs {
@@ -291,7 +291,9 @@ export async function runChat(args: ChatArgs): Promise<void> {
   const toolCtx: ToolContext = { cwd };
 
   // Per-turn abort holder. SIGINT aborts the active turn; a second SIGINT with
-  // no active turn force-quits the process.
+  // no active turn force-quits the process. A double-tap of Escape also aborts
+  // the active turn (see watchDoubleEsc) — convenient when the user's hands
+  // are on the home row and they want to bail back to the prompt.
   const turnAbort: { current: AbortController | null } = { current: null };
   let exitFlagged = false;
   const onSigInt = () => {
@@ -309,21 +311,37 @@ export async function runChat(args: ChatArgs): Promise<void> {
   };
   process.on("SIGINT", onSigInt);
 
+  // Begin a turn: create the AbortController, register it as the active
+  // cancellable turn (so SIGINT can abort it), and arm the double-Esc watcher.
+  // Returns the controller + a stop() that unarms everything and clears the
+  // active slot. Call stop() in the turn's finally.
+  const beginTurn = (): { controller: AbortController; stop: () => void } => {
+    const controller = new AbortController();
+    turnAbort.current = controller;
+    const stopEsc = watchDoubleEsc(() => controller.abort());
+    return {
+      controller,
+      stop: () => {
+        stopEsc();
+        turnAbort.current = null;
+      },
+    };
+  };
+
   // ---- One-shot mode ----
   if (args.prompt) {
     session.messages.push({ role: "user", content: await expandFileRefs(args.prompt, cwd) });
-    const controller = new AbortController();
-    turnAbort.current = controller;
+    const turn = beginTurn();
     try {
       if (args.outputFormat === "json") {
         await runJsonOneShot(session, {
           apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
-          tools, permissions, toolCtx, prompt: args.prompt, signal: controller.signal, spawnAgent,
+          tools, permissions, toolCtx, prompt: args.prompt, signal: turn.controller.signal, spawnAgent,
         });
       } else {
         await driveTurn(session, {
           apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
-          tools, permissions, toolCtx, signal: controller.signal, spawnAgent,
+          tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
         });
       }
       await saveSession(session);
@@ -335,7 +353,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
         printError(`turn failed: ${msg}`);
       }
     } finally {
-      turnAbort.current = null;
+      turn.stop();
       process.off("SIGINT", onSigInt);
       await mcp.close().catch(() => {});
       restoreTerminal();
@@ -347,7 +365,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
 
   // ---- Interactive REPL ----
   printWelcome(model, reasoning, skipAll, baseUrl);
-  printTip("type /help for commands, /exit to quit, Ctrl-C to abort a turn");
+  printTip("type /help for commands · double-tap Esc to abort a turn · /exit to quit");
   blank();
 
   let firstPrompt = true;
@@ -399,19 +417,18 @@ export async function runChat(args: ChatArgs): Promise<void> {
             history.unshift(inv.task);
             if (history.length > 1000) history.length = 1000;
             appendHistory(inv.task).catch(() => {});
-            const controller = new AbortController();
-            turnAbort.current = controller;
+            const turn = beginTurn();
             try {
               await driveTurn(session, {
                 apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
-                tools, permissions, toolCtx, signal: controller.signal, spawnAgent,
+                tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
               });
               await saveSession(session);
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
               printError(`turn failed: ${msg}`);
             } finally {
-              turnAbort.current = null;
+              turn.stop();
             }
             continue;
           }
@@ -427,19 +444,18 @@ export async function runChat(args: ChatArgs): Promise<void> {
           }
           // Drop everything after the last user message, then re-run the turn.
           session.messages.length = idx + 1;
-          const controller = new AbortController();
-          turnAbort.current = controller;
+          const turn = beginTurn();
           try {
             await driveTurn(session, {
               apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
-              tools, permissions, toolCtx, signal: controller.signal, spawnAgent,
+              tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
             });
             await saveSession(session);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             printError(`turn failed: ${msg}`);
           } finally {
-            turnAbort.current = null;
+            turn.stop();
           }
           continue;
         }
@@ -454,19 +470,18 @@ export async function runChat(args: ChatArgs): Promise<void> {
       history.unshift(trimmed);
       if (history.length > 1000) history.length = 1000;
       appendHistory(trimmed).catch(() => {});
-      const controller = new AbortController();
-      turnAbort.current = controller;
+      const turn = beginTurn();
       try {
         await driveTurn(session, {
           apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
-          tools, permissions, toolCtx, signal: controller.signal, spawnAgent,
+          tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
         });
         await saveSession(session);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         printError(`turn failed: ${msg}`);
       } finally {
-        turnAbort.current = null;
+        turn.stop();
       }
     }
   } finally {
