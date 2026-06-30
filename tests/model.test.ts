@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { handleSlashCommand } from "../src/commands/chat.ts";
+import { handleSlashCommand, runModelSetupFlow } from "../src/commands/chat.ts";
 import { newSession } from "../src/session/store.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { setOutputSilent } from "../src/ui/render.ts";
@@ -75,5 +75,27 @@ describe("selectOption picker", () => {
     const r = await selectOption("pick", [{ label: "a", value: "a" }, { label: "b", value: "b" }]);
     // In the test runner stdin is not a TTY → no interactive picker.
     expect(r).toBeNull();
+  });
+});
+
+describe("runModelSetupFlow (non-TTY guard)", () => {
+  it("cancels without switching when no TTY is available", async () => {
+    // stdin is not a TTY in the test runner → the first picker returns null;
+    // the whole flow must abort without touching setModel/effort/context.
+    const calls: string[] = [];
+    const ctx2: SlashCtx = {
+      apiKey: "sk-test",
+      model: "deepseek-v4-flash",
+      temperature: 0.7,
+      tools: new ToolRegistry(),
+      setModel: (id: string) => { calls.push(`model:${id}`); },
+      skills: noopSkills as SlashCtx["skills"],
+      mcp: noopMcp as SlashCtx["mcp"],
+      reasoning: { get: () => true, set: async () => { calls.push("reasoning"); } },
+      effort: { get: () => "high", set: async () => { calls.push("effort"); } },
+      context: { get: () => 60000, set: async () => { calls.push("context"); } },
+    };
+    await runModelSetupFlow(ctx2);
+    expect(calls).toEqual([]);
   });
 });

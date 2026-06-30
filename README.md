@@ -77,7 +77,7 @@ deepseek config                                 # show merged config
 | `/help`          | Show available commands                                  |
 | `/exit`          | Quit the session                                         |
 | `/clear`         | Wipe conversation history (system prompt retained)      |
-| `/model [name]`  | Arrow-key model picker, or switch to a specific id          |
+| `/model [name]`  | Setup wizard: model → effort → context (or `/model <id>` quick switch) |
 | `/reasoning [on|off\|effort high\|max]` | Show/set thinking default + intensity                          |
 | `/context [tokens]` | Show/set the context-trim budget                              |
 | `/log`           | Show the log file path                                  |
@@ -140,7 +140,7 @@ Configuration is read from `~/.deepseek-cli/config.json` (file mode `0600`). Env
 | `deepseek-chat`     | Legacy; **deprecating 2026-07-24**                |
 | `deepseek-reasoner` | Legacy reasoning; **deprecating 2026-07-24**      |
 
-`/model` launches an **arrow-key picker** (↑/↓ · enter · esc) in a TTY; `/model <id>` switches directly and accepts any model id (useful with `--base-url` for other providers). The `thinking:{type:"enabled"}` request flag is sent automatically when reasoning is on; `reasoning_effort` (`high`/`max`) and the context-trim budget are adjustable via `/reasoning effort` and `/context`.
+`/model` launches an **arrow-key setup wizard** (↑/↓ · enter · esc) in a TTY: pick the model, then reasoning effort (`off/high/max`), then a context budget preset (`60k…1M`) — each step defaults to "keep current" so you can change only what you want. `/model <id>` switches the model directly (useful with `--base-url` for other providers). `thinking:{type:"enabled"}` is sent when reasoning is on; effort/context can also be tuned separately via `/reasoning effort` and `/context`.
 
 ### Project-level instructions
 
