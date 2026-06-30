@@ -331,7 +331,7 @@ bun run build            # compile single binary to ./dist/deepseek
 
 Releases are automated through GitHub Actions (`.github/workflows/release.yml`):
 
-1. Tag a release — `git tag v0.3.2 && git push origin v0.3.2`.
+1. Tag a release — `git tag v0.4.0 && git push origin v0.4.0`.
 2. The workflow cross-compiles four binaries (`darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`) using `bun build --compile --target=bun-<os>-<arch>`.
 3. Each binary is gzipped-tarred (containing just `deepseek`) and uploaded to a GitHub Release.
 4. The same workflow regenerates `Formula/deepseek.rb` in the [`charsdavy/homebrew-tap`](https://github.com/charsdavy/homebrew-tap) repo with fresh SHA256s and pushes the commit.
