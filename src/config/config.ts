@@ -30,6 +30,10 @@ export interface CliConfig {
   baseUrl?: string;
   /** Default reasoning/thinking mode for new sessions (toggled via /reasoning). */
   reasoning?: boolean;
+  /** Thinking intensity: "high" (default) or "max". */
+  reasoningEffort?: "high" | "max";
+  /** Operational context-trim budget in tokens (default 60000). */
+  maxContext?: number;
 }
 
 export const DEFAULT_CONFIG: CliConfig = {
@@ -113,6 +117,19 @@ function normalizeConfig(raw: Record<string, unknown>): Partial<CliConfig> {
   if (typeof raw.reasoning === "boolean") {
     out.reasoning = raw.reasoning;
   } else if (raw.reasoning !== undefined) dropped.push("reasoning");
+
+  if (typeof raw.reasoningEffort === "string") {
+    const v = raw.reasoningEffort;
+    if (v === "high" || v === "max") {
+      out.reasoningEffort = v as "high" | "max";
+    } else {
+      dropped.push("reasoningEffort");
+    }
+  } else if (raw.reasoningEffort !== undefined) dropped.push("reasoningEffort");
+
+  if (typeof raw.maxContext === "number" && Number.isInteger(raw.maxContext) && raw.maxContext >= 4000) {
+    out.maxContext = raw.maxContext;
+  } else if (raw.maxContext !== undefined) dropped.push("maxContext");
 
   if (dropped.length > 0) {
     printSystem(`Config: ignoring invalid field(s): ${dropped.join(", ")}`, "yellow");

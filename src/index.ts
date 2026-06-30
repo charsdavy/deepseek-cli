@@ -66,6 +66,8 @@ async function main(): Promise<void> {
         maxTokens: args.maxTokens,
         outputFormat: args.outputFormat,
         noMcp: args.noMcp,
+        reasoningEffort: args.reasoningEffort,
+        maxContext: args.maxContext,
         verbose: args.verbose,
       });
       return;

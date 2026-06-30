@@ -23,6 +23,8 @@ export interface ParsedArgs {
   maxTokens?: number;
   outputFormat?: "text" | "json";
   noMcp?: boolean;
+  reasoningEffort?: "high" | "max";
+  maxContext?: number;
   mcpArgs?: string[];
   skillArgs?: string[];
   verbose?: boolean;
@@ -56,6 +58,8 @@ Options:
       --output-format <text|json>        One-shot only: emit a single JSON result
                                          (no streaming/ANSI) for scripting / CI
       --no-mcp                           Do not load MCP servers this session
+      --reasoning-effort <high|max>      Thinking intensity (default high; max = deeper)
+      --max-context <tokens>             Operational context-trim budget (default 60000)
       --verbose                          Verbose logging
   -h, --help                             Show this help
   -V, --version                          Print version
@@ -148,6 +152,17 @@ export function parseArgs(argv: string[]): ParsedArgs {
       }
       case "--no-mcp":
         out.noMcp = true;
+        break;
+      case "--reasoning-effort": {
+        const v = args[++i] as string;
+        if (v !== "high" && v !== "max") {
+          throw new ArgError(`--reasoning-effort must be high|max, got: ${v}`);
+        }
+        out.reasoningEffort = v;
+        break;
+      }
+      case "--max-context":
+        out.maxContext = Number(args[++i]);
         break;
       case "--temperature":
         out.temperature = Number(args[++i]);

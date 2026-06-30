@@ -78,7 +78,8 @@ deepseek config                                 # show merged config
 | `/exit`          | Quit the session                                         |
 | `/clear`         | Wipe conversation history (system prompt retained)      |
 | `/model [name]`  | Arrow-key model picker, or switch to a specific id          |
-| `/reasoning [on|off]` | Show or set the thinking default (persisted)          |
+| `/reasoning [on|off\|effort high\|max]` | Show/set thinking default + intensity                          |
+| `/context [tokens]` | Show/set the context-trim budget                              |
 | `/new`           | Start a fresh session — clears context, new id         |
 | `/skill [name]`  | List skills, or toggle a skill on/off                  |
 | `/mcp [name]`    | List MCP servers, or toggle a server's tools           |
@@ -121,6 +122,8 @@ Configuration is read from `~/.deepseek-cli/config.json` (file mode `0600`). Env
 | `--max-tokens <n>`                | Max output tokens per response                                     |
 | `--output-format <text\|json>`    | One-shot only: emit a single JSON result (no streaming/ANSI)       |
 | `--no-mcp`                       | Do not load MCP servers this session                              |
+| `--reasoning-effort <high\|max>` | Thinking intensity (default high; max = deeper/costlier)          |
+| `--max-context <tokens>`         | Operational context-trim budget (default 60000)                   |
 | `--verbose`                      | Verbose logging                                                    |
 
 > During a turn, **Ctrl-C** aborts the in-flight request cleanly; a second Ctrl-C force-quits.
@@ -134,7 +137,7 @@ Configuration is read from `~/.deepseek-cli/config.json` (file mode `0600`). Env
 | `deepseek-chat`     | Legacy; **deprecating 2026-07-24**                |
 | `deepseek-reasoner` | Legacy reasoning; **deprecating 2026-07-24**      |
 
-`/model` launches an **arrow-key picker** (↑/↓ · enter · esc) in a TTY; `/model <id>` switches directly and accepts any model id (useful with `--base-url` for other providers). The `thinking:{type:"enabled"}` request flag is sent automatically when reasoning is on.
+`/model` launches an **arrow-key picker** (↑/↓ · enter · esc) in a TTY; `/model <id>` switches directly and accepts any model id (useful with `--base-url` for other providers). The `thinking:{type:"enabled"}` request flag is sent automatically when reasoning is on; `reasoning_effort` (`high`/`max`) and the context-trim budget are adjustable via `/reasoning effort` and `/context`.
 
 ### Project-level instructions
 

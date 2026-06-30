@@ -18,8 +18,12 @@ export interface AgentOptions {
   apiKey: string;
   model: string;
   reasoning?: boolean;
+  /** Thinking intensity: "high" (default) or "max". */
+  reasoningEffort?: "high" | "max";
   temperature?: number;
   maxTokens?: number;
+  /** Operational context budget for trimming (tokens). Defaults to 60_000. */
+  maxContext?: number;
   maxIterations?: number;
   tools: ToolRegistry;
   permissions: PermissionManager;
@@ -76,7 +80,7 @@ export async function runAgentLoop(
     }
 
     // Trim context if necessary
-    const trimmed = trimToFit(messages);
+    const trimmed = trimToFit(messages, opts.maxContext);
     if (trimmed.droppedTurns > 0) {
       printSystem(
         `context trimmed: dropped ${trimmed.droppedTurns} turn(s) ` +
@@ -97,6 +101,7 @@ export async function runAgentLoop(
         tools: tools.schemas() as ToolDef[],
         temperature: opts.temperature,
         reasoning: shouldReason,
+        reasoningEffort: opts.reasoningEffort,
         maxTokens: opts.maxTokens,
         signal: opts.signal,
         baseUrl: opts.baseUrl,

@@ -217,6 +217,24 @@ describe("trimToFit", () => {
     expect(r.messages.length).toBe(2);
   });
 
+  it("honors a custom (smaller) maxContext budget", () => {
+    // With a tiny budget, even a modest conversation must trim.
+    const big = "a".repeat(2000);
+    const msgs: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+      { role: "system", content: "sys" },
+    ];
+    for (let i = 0; i < 10; i++) {
+      msgs.push({ role: "user", content: `user ${i} ${big}` });
+      msgs.push({ role: "assistant", content: `a ${i} ${big}` });
+    }
+    const r = trimToFit(msgs, 8_000);
+    expect(r.droppedTurns).toBeGreaterThan(0);
+    expect(r.messages.length).toBeLessThan(msgs.length);
+    // A smaller budget trims more than the default would for the same input.
+    const rDefault = trimToFit(msgs);
+    expect(r.messages.length).toBeLessThanOrEqual(rDefault.messages.length);
+  });
+
   it("trims oldest turns when over budget", () => {
     // Build a conversation that exceeds the budget.
     const big = "a".repeat(4000);
@@ -361,5 +379,37 @@ describe("DeepSeek client SSE parsing", () => {
     } finally {
       globalThis.fetch = origFetch;
     }
+  });
+
+  it("sends reasoning_effort and thinking when reasoning is on", async () => {
+    let capturedBody = "";
+    const sse = `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n data: [DONE]\n\n`;
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode(sse));
+        c.close();
+      },
+    });
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+      capturedBody = (init?.body as string) ?? "";
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+    try {
+      for await (const _chunk of streamChatCompletion({
+        apiKey: "sk-test",
+        model: "deepseek-v4-pro",
+        messages: [],
+        reasoning: true,
+        reasoningEffort: "max",
+      })) {
+        void _chunk;
+      }
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    const parsed = JSON.parse(capturedBody) as { reasoning_effort?: string; thinking?: { type: string } };
+    expect(parsed.thinking).toEqual({ type: "enabled" });
+    expect(parsed.reasoning_effort).toBe("max");
   });
 });
