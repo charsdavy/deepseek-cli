@@ -25,7 +25,7 @@ import { VERSION } from "../cli.ts";
 import { paint, symbol } from "../ui/theme.ts";
 import { blank, printBordered, printError, printSeparator, printSystem, printTip, setOutputSilent, writeLine } from "../ui/render.ts";
 import { outputSilent } from "../ui/theme.ts";
-import { askMultiline, closeReadline, selectOption } from "../ui/input.ts";
+import { askMultiline, closeReadline, restoreTerminal, selectOption } from "../ui/input.ts";
 import { spinner } from "../ui/spinner.ts";
 
 export interface ChatArgs {
@@ -254,8 +254,8 @@ export async function runChat(args: ChatArgs): Promise<void> {
       for (const t of mcp.toTools()) tools.register(t);
     }
   }
-  // Ensure MCP child processes are torn down on exit.
-  const closeMcp = () => { mcp.close().catch(() => {}); };
+  // MCP child processes are torn down on exit via `await mcp.close()` in the
+  // finally blocks below.
 
   // Surface server enable/disable + per-server tools to the /mcp command.
   const mcpApi: McpApi = {
@@ -301,6 +301,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
     }
     if (exitFlagged) {
       writeLine();
+      restoreTerminal();
       process.exit(130);
     }
     exitFlagged = true;
@@ -336,8 +337,10 @@ export async function runChat(args: ChatArgs): Promise<void> {
     } finally {
       turnAbort.current = null;
       process.off("SIGINT", onSigInt);
-      closeMcp();
+      await mcp.close().catch(() => {});
+      restoreTerminal();
       closeReadline();
+      process.exit(0);
     }
     return;
   }
@@ -469,9 +472,13 @@ export async function runChat(args: ChatArgs): Promise<void> {
   } finally {
     process.off("SIGINT", onSigInt);
     await saveSession(session).catch(() => {});
-    closeMcp();
+    await mcp.close().catch(() => {});
+    restoreTerminal();
     closeReadline();
     printSystem("Goodbye! 👋", "magenta");
+    // Force-exit so lingering handles (logger writes, MCP child pipes) can't
+    // keep the process alive and trap the user's terminal after /exit.
+    process.exit(0);
   }
 }
 
