@@ -269,6 +269,18 @@ export function closeReadline(): void {
   rl = null;
 }
 
+/** Restore the terminal to cooked mode and stop reading stdin. Call before
+ *  process.exit so the user's shell gets a sane TTY back. */
+export function restoreTerminal(): void {
+  const tty = input as unknown as NodeJS.ReadStream & { isRaw?: boolean; setRawMode?: (m: boolean) => void };
+  try { tty.setRawMode?.(false); } catch {
+    /* ignore */
+  }
+  try { tty.pause(); } catch {
+    /* ignore */
+  }
+}
+
 // ---- Interactive arrow-key picker ----
 
 export interface SelectOption {
