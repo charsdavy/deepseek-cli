@@ -71,4 +71,15 @@ describe("parseAddArgs", () => {
   it("returns null on a malformed --env (no =)", () => {
     expect(parseAddArgs(["fs", "npx", "--env", "NOEQ"])).toBeNull();
   });
+
+  it("sets isDangerous with --dangerous", () => {
+    const p = parseAddArgs(["fs", "npx", "-y", "@x/y", "--dangerous"]);
+    expect(p).not.toBeNull();
+    expect(p!.isDangerous).toBe(true);
+  });
+
+  it("defaults isDangerous to undefined without --dangerous", () => {
+    const p = parseAddArgs(["fs", "npx", "-y", "@x/y"]);
+    expect(p!.isDangerous).toBeUndefined();
+  });
 });
