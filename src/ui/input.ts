@@ -291,7 +291,7 @@ export async function askMultiline(
 // incoming bytes. The detection logic is split into a pure reducer so it can
 // be unit-tested without a real TTY.
 
-export const DOUBLE_ESC_WINDOW_MS = 450;
+export const DOUBLE_ESC_WINDOW_MS = 1500;
 
 /**
  * Pure reducer for double-Escape detection. Given the inbound bytes, the

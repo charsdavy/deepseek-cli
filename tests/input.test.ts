@@ -72,4 +72,11 @@ describe("reduceEsc", () => {
     const fired = reduceEsc(new Uint8Array([ESC]), between.lastEsc, first + 100);
     expect(fired.abort).toBe(true);
   });
+
+  it("DOUBLE_ESC_WINDOW_MS is wide enough for a human-paced second tap", () => {
+    // Regression: previously 450ms, which was too tight for a user reading
+    // "(Esc again to cancel)" and then reacting — the second tap re-armed
+    // instead of aborting. 1.5s covers a comfortable read + react window.
+    expect(DOUBLE_ESC_WINDOW_MS).toBeGreaterThanOrEqual(1500);
+  });
 });
