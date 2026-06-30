@@ -13,6 +13,7 @@ import { todoWriteTool } from "./todo.ts";
 import { gitDiffTool } from "./git_diff.ts";
 import { gitStatusTool } from "./git_status.ts";
 import { listDirTool } from "./list_dir.ts";
+import { taskTool } from "./task.ts";
 
 const BUILTIN_TOOLS: Tool[] = [
   readFileTool,
@@ -26,6 +27,7 @@ const BUILTIN_TOOLS: Tool[] = [
   gitDiffTool,
   gitStatusTool,
   listDirTool,
+  taskTool,
 ];
 
 export class ToolRegistry {
