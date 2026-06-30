@@ -25,6 +25,7 @@ interface ServerEntry {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  isDangerous?: boolean;
 }
 
 type McpFile = { mcpServers: Record<string, ServerEntry> };
@@ -63,7 +64,7 @@ export async function runMcpCommand(args: string[]): Promise<void> {
     default:
       blank();
       writeLine(paint.bold("deepseek mcp — manage MCP servers"));
-      writeLine(paint.gray("  deepseek mcp add <name> <command> [args...] [--env K=V ...] [--project]"));
+      writeLine(paint.gray("  deepseek mcp add <name> <command> [args...] [--env K=V ...] [--project] [--dangerous]"));
       writeLine(paint.gray("  deepseek mcp list"));
       writeLine(paint.gray("  deepseek mcp remove <name> [--project]"));
       blank();
@@ -76,16 +77,20 @@ export interface ParsedMcpAdd {
   args: string[];
   env: Record<string, string>;
   project: boolean;
+  /** Mark this server's tools as dangerous (require per-call approval). */
+  isDangerous?: boolean;
 }
 
-/** Parse `mcp add <name> <command> [args...] [--env K=V ...] [--project]` args. */
+/** Parse `mcp add <name> <command> [args...] [--env K=V ...] [--project] [--dangerous]` args. */
 export function parseAddArgs(args: string[]): ParsedMcpAdd | null {
   let project = false;
+  let isDangerous = false;
   const env: Record<string, string> = {};
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--project") { project = true; continue; }
+    if (a === "--dangerous" || a === "--require-approval") { isDangerous = true; continue; }
     if (a === "--env" || a === "-e") {
       const kv = args[++i];
       if (!kv || !kv.includes("=")) return null;
@@ -98,7 +103,7 @@ export function parseAddArgs(args: string[]): ParsedMcpAdd | null {
   const name = positional[0];
   const command = positional[1];
   if (!name || !command) return null;
-  return { name, command, args: positional.slice(2), env, project };
+  return { name, command, args: positional.slice(2), env, project, isDangerous: isDangerous || undefined };
 }
 
 /** Write a server entry into the (global or project) mcp.json. */
@@ -109,6 +114,7 @@ export async function addServerToConfig(parsed: ParsedMcpAdd): Promise<string> {
     command: parsed.command,
     args: parsed.args.length ? parsed.args : undefined,
     env: Object.keys(parsed.env).length ? parsed.env : undefined,
+    isDangerous: parsed.isDangerous ? true : undefined,
   };
   await writeMcpFile(file, data);
   return file;
@@ -117,7 +123,7 @@ export async function addServerToConfig(parsed: ParsedMcpAdd): Promise<string> {
 async function addServer(args: string[]): Promise<void> {
   const parsed = parseAddArgs(args);
   if (!parsed) {
-    printError("usage: deepseek mcp add <name> <command> [args...] [--env K=V ...] [--project]");
+    printError("usage: deepseek mcp add <name> <command> [args...] [--env K=V ...] [--project] [--dangerous]");
     return;
   }
 

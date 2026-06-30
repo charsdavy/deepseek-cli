@@ -251,7 +251,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
 
   // Surface server enable/disable + per-server tools to the /mcp command.
   const mcpApi: McpApi = {
-    servers: () => mcp.status().map((s) => ({ name: s.name, enabled: s.enabled, toolCount: s.toolCount })),
+    servers: () => mcp.status().map((s) => ({ name: s.name, enabled: s.enabled, toolCount: s.toolCount, dangerous: s.dangerous === true })),
     toggle: (name: string) => mcp.toggleServer(name),
     toolsForServer: (name: string) => mcp.toolsForServer(name),
     add: async (parsed) => {
@@ -261,6 +261,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
           command: parsed.command,
           args: parsed.args.length ? parsed.args : undefined,
           env: Object.keys(parsed.env).length ? parsed.env : undefined,
+          isDangerous: parsed.isDangerous ? true : undefined,
         };
         const res = await mcp.addServer(parsed.name, cfg); // live connect
         if (res.ok) for (const t of mcp.toolsForServer(parsed.name)) tools.register(t);
@@ -685,7 +686,7 @@ interface SkillsApi {
 
 /** MCP API handed to the /mcp slash handler. */
 interface McpApi {
-  servers: () => { name: string; enabled: boolean; toolCount: number }[];
+  servers: () => { name: string; enabled: boolean; toolCount: number; dangerous: boolean }[];
   toggle: (name: string) => boolean;
   toolsForServer: (name: string) => Tool[];
   /** Add a server live: write config + spawn/connect + register tools.
@@ -888,7 +889,7 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
       if (arg === "add") {
         const parsed = parseAddArgs(rest.slice(1));
         if (!parsed) {
-          printError("usage: /mcp add <name> <command> [args...] [--env K=V ...] [--project]");
+          printError("usage: /mcp add <name> <command> [args...] [--env K=V ...] [--project] [--dangerous]");
           return "continue";
         }
         const res = await ctx.mcp.add(parsed);
@@ -909,7 +910,8 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
         writeLine(paint.gray("mcp servers:"));
         for (const s of list) {
           const mark = s.enabled ? paint.green("●") : paint.gray("○");
-          writeLine(`  ${mark} ${pad(s.name, 20)} ${paint.gray(s.toolCount + " tool" + (s.toolCount === 1 ? "" : "s"))}`);
+          const warn = s.dangerous ? paint.bright.yellow("⚠ ") : "";
+          writeLine(`  ${mark} ${warn}${pad(s.name, 20)} ${paint.gray(s.toolCount + " tool" + (s.toolCount === 1 ? "" : "s"))}`);
         }
         writeLine(paint.gray("\n/mcp <name> toggles · /mcp add … adds · /mcp clear-ish via config"));
         return "continue";
@@ -1140,6 +1142,8 @@ function printSlashHelp(): void {
     ["/export [path]", "dump the transcript to stdout or a file"],
     ["/sessions [query]", "list recent sessions (or search by keyword)"],
   ];
+  // Display in stable A-Z order by command name.
+  cmds.sort((a, b) => a[0].localeCompare(b[0]));
   for (const [cmd, desc] of cmds) {
     writeLine(`  ${paint.cyan(pad(cmd, 18))} ${paint.gray(desc)}`);
   }

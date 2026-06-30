@@ -19,6 +19,8 @@ export interface LoadedServer {
   toolCount: number;
   ok: boolean;
   enabled: boolean;
+  /** True if this server's tools require per-call approval. */
+  dangerous?: boolean;
   error?: string;
 }
 
@@ -55,11 +57,15 @@ export async function loadMcpConfig(cwd: string): Promise<McpConfig> {
 interface BoundTool {
   serverName: string;
   toolDef: McpToolDef;
+  /** Whether this server's tools require per-call approval (config.isDangerous). */
+  dangerous: boolean;
 }
 
 export class McpRegistry {
   private clients = new Map<string, McpClient>();
   private bound: BoundTool[] = [];
+  /** Dangerous-flag per server (for /mcp listing + status). */
+  private dangerous = new Map<string, boolean>();
   /** Disabled servers stay connected but their tools are hidden from the model. */
   private disabled = new Set<string>();
 
@@ -67,6 +73,8 @@ export class McpRegistry {
   async load(config: McpConfig): Promise<LoadedServer[]> {
     const results: LoadedServer[] = [];
     for (const [name, serverCfg] of Object.entries(config.mcpServers)) {
+      const dangerous = serverCfg.isDangerous === true;
+      this.dangerous.set(name, dangerous);
       try {
         const transport = new StdioMcpTransport(serverCfg);
         await transport.start();
@@ -74,13 +82,12 @@ export class McpRegistry {
         await client.connect();
         const tools = await client.listTools();
         this.clients.set(name, client);
-        for (const t of tools) this.bound.push({ serverName: name, toolDef: t });
-        results.push({ name, toolCount: tools.length, ok: true, enabled: true });
+        for (const t of tools) this.bound.push({ serverName: name, toolDef: t, dangerous });        results.push({ name, toolCount: tools.length, ok: true, enabled: true, dangerous });
         log.info("mcp connected", { server: name, tools: tools.length });
         printSystem(`mcp: ${name} connected (${tools.length} tool${tools.length === 1 ? "" : "s"})`, "green");
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        results.push({ name, toolCount: 0, ok: false, enabled: false, error: msg });
+        results.push({ name, toolCount: 0, ok: false, enabled: false, dangerous, error: msg });
         log.error("mcp connect failed", { server: name, error: msg });
         printSystem(`mcp: ${name} failed to start — ${msg}`, "yellow");
       }
@@ -90,6 +97,8 @@ export class McpRegistry {
 
   /** Spawn + connect one server live (mid-session), bind its tools. */
   async addServer(name: string, serverCfg: McpServerConfig): Promise<LoadedServer> {
+    const dangerous = serverCfg.isDangerous === true;
+    this.dangerous.set(name, dangerous);
     // If already connected, close the old instance first.
     if (this.clients.has(name)) {
       await this.clients.get(name)!.close().catch(() => {});
@@ -104,15 +113,14 @@ export class McpRegistry {
       await client.connect();
       const tools = await client.listTools();
       this.clients.set(name, client);
-      for (const t of tools) this.bound.push({ serverName: name, toolDef: t });
-      log.info("mcp connected", { server: name, tools: tools.length });
+      for (const t of tools) this.bound.push({ serverName: name, toolDef: t, dangerous: serverCfg.isDangerous === true });      log.info("mcp connected", { server: name, tools: tools.length });
       printSystem(`mcp: ${name} connected (${tools.length} tool${tools.length === 1 ? "" : "s"})`, "green");
-      return { name, toolCount: tools.length, ok: true, enabled: true };
+      return { name, toolCount: tools.length, ok: true, enabled: true, dangerous };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       log.error("mcp connect failed", { server: name, error: msg });
       printSystem(`mcp: ${name} failed to start — ${msg}`, "yellow");
-      return { name, toolCount: 0, ok: false, enabled: false, error: msg };
+      return { name, toolCount: 0, ok: false, enabled: false, dangerous, error: msg };
     }
   }
 
@@ -121,13 +129,13 @@ export class McpRegistry {
     const self = this;
     return this.bound
       .filter((b) => !self.disabled.has(b.serverName))
-      .map(({ serverName, toolDef }) => {
+      .map(({ serverName, toolDef, dangerous }) => {
       const name = `mcp_${serverName}_${toolDef.name}`;
       return {
         name,
         description: toolDef.description ?? `MCP tool ${toolDef.name} from ${serverName}`,
         category: "network",
-        isDangerous: false,
+        isDangerous: dangerous,
         parameters: (toolDef.inputSchema as Record<string, unknown>) ?? {
           type: "object",
           properties: {},
@@ -158,13 +166,13 @@ export class McpRegistry {
     const self = this;
     return this.bound
       .filter((b) => b.serverName === serverName)
-      .map(({ serverName, toolDef }) => {
+      .map(({ serverName, toolDef, dangerous }) => {
         const name = `mcp_${serverName}_${toolDef.name}`;
         return {
           name,
           description: toolDef.description ?? `MCP tool ${toolDef.name} from ${serverName}`,
           category: "network" as const,
-          isDangerous: false,
+          isDangerous: dangerous,
           parameters: (toolDef.inputSchema as Record<string, unknown>) ?? { type: "object", properties: {} },
           async execute(args: Record<string, unknown>, _ctx: ToolContext): Promise<ToolResult> {
             try {
@@ -203,6 +211,7 @@ export class McpRegistry {
       toolCount: this.bound.filter((b) => b.serverName === name).length,
       ok: true,
       enabled: !this.disabled.has(name),
+      dangerous: this.dangerous.get(name) === true,
     }));
   }
 
@@ -212,6 +221,7 @@ export class McpRegistry {
     this.clients.clear();
     this.bound = [];
     this.disabled.clear();
+    this.dangerous.clear();
   }
 }
 

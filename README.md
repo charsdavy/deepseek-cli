@@ -190,10 +190,13 @@ Connect external MCP servers over stdio; their tools are exposed to the agent as
 ```bash
 deepseek mcp add fs npx -y @modelcontextprotocol/server-filesystem /abs/path
 deepseek mcp add gh npx -y @modelcontextprotocol/server-github --env GITHUB_PERSONAL_ACCESS_TOKEN=ghp_xxx
+deepseek mcp add shell bash --dangerous   # mark this server's tools as requiring per-call approval
 deepseek mcp list                       # show configured servers
 deepseek mcp remove gh                  # remove a server
 # add --project to write into <repo>/.mcp.json instead of the global file
 ```
+
+A server entry may set `"isDangerous": true` (or pass `--dangerous` to add) so each of its tool calls prompts for `y/n` approval (skippable via `/allow <server>` or `--yolo`). `/mcp` marks such servers with ⚠.
 
 The equivalent JSON (for reference):
 

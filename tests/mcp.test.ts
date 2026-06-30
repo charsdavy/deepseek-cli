@@ -130,20 +130,24 @@ describe("McpRegistry toTools + toggle", () => {
     // McpRegistry.load requires real servers; we exercise the tool-building
     // by injecting state via a tiny subclass that bypasses spawning.
     class FakeRegistry extends McpRegistry {
-      seed(serverName: string, tools: { name: string; description?: string; inputSchema?: Record<string, unknown> }[]) {
+      seed(serverName: string, tools: { name: string; description?: string; inputSchema?: Record<string, unknown> }[], dangerous = false) {
         (this as unknown as { bound: unknown[] }).bound.push(
-          ...tools.map((t) => ({ serverName, toolDef: t })),
+          ...tools.map((t) => ({ serverName, toolDef: t, dangerous })),
         );
         // mark connected
         (this as unknown as { clients: Map<string, unknown> }).clients.set(serverName, {});
+        (this as unknown as { dangerous: Map<string, boolean> }).dangerous.set(serverName, dangerous);
       }
     }
     const reg = new FakeRegistry();
     reg.seed("fs", [{ name: "read", description: "read a file" }]);
-    reg.seed("net", [{ name: "fetch", description: "fetch url" }]);
+    reg.seed("net", [{ name: "fetch", description: "fetch url" }], true);
 
     const all = reg.toTools();
     expect(all.map((t) => t.name).sort()).toEqual(["mcp_fs_read", "mcp_net_fetch"]);
+    // The dangerous server's tools are flagged; the safe one isn't.
+    expect(all.find((t) => t.name === "mcp_net_fetch")!.isDangerous).toBe(true);
+    expect(all.find((t) => t.name === "mcp_fs_read")!.isDangerous).toBe(false);
 
     // Toggle net off → its tools disappear.
     expect(reg.toggleServer("net")).toBe(false); // now disabled

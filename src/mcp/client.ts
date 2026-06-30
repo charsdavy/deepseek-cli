@@ -22,6 +22,9 @@ export interface McpServerConfig {
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
+  /** When true, this server's tools are marked dangerous → each call prompts
+   *  for y/n approval (unless /allow'd or --yolo). Default false. */
+  isDangerous?: boolean;
 }
 
 export interface McpConfig {
