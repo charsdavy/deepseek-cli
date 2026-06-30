@@ -328,6 +328,11 @@ export async function runChat(args: ChatArgs): Promise<void> {
   const slashCompleter = (line: string, cb: (err: null, result: [string[], string]) => void) => {
     cb(null, [completeSlash(line), line]);
   };
+  // Pre-fill carrier between a slash command (e.g. /skill picker) and the next
+  // prompt, so the chosen "/skillname " shows in the input area for inline task
+  // entry.
+  const prefillHolder: { value: string } = { value: "" };
+  let prefill = "";
   try {
     while (true) {
       let input: string;
@@ -335,7 +340,13 @@ export async function runChat(args: ChatArgs): Promise<void> {
         // A subtle rule between turns gives the REPL a Claude-Code-like rhythm.
         if (!firstPrompt) printSeparator();
         firstPrompt = false;
-        input = await askMultiline(`${paint.bold(paint.bright.cyan(`${symbol.user}`))} ${paint.gray("›")} `, history, slashCompleter);
+        input = await askMultiline(
+          `${paint.bold(paint.bright.cyan(`${symbol.user}`))} ${paint.gray("›")} `,
+          history,
+          slashCompleter,
+          prefill || undefined,
+        );
+        prefill = "";
       } catch {
         break;
       }
@@ -345,6 +356,45 @@ export async function runChat(args: ChatArgs): Promise<void> {
 
       if (trimmed.startsWith("/")) {
         const lowerCmd = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase();
+        // /<skillname> <task>  →  activate that skill, run <task> with it.
+        // Slash commands (help/model/skill/…) take precedence so a skill can't
+        // shadow them; everything else starting with "/" is tried as a skill id.
+        const inv = parseSlashSkillInvocation(trimmed);
+        if (inv) {
+          const skillContent = await readSkill(inv.name, cwd);
+          if (skillContent) {
+            if (!activeSkills.has(inv.name)) {
+              activeSkills.set(inv.name, skillContent.content);
+              rebuildSystemPrompt();
+            }
+            if (!inv.task) {
+              printSystem(`skill '${inv.name}' active — type your task`, "green");
+              continue;
+            }
+            session.messages.push({ role: "user", content: await expandFileRefs(inv.task, cwd) });
+            history.unshift(inv.task);
+            if (history.length > 1000) history.length = 1000;
+            appendHistory(inv.task).catch(() => {});
+            const controller = new AbortController();
+            turnAbort.current = controller;
+            try {
+              await driveTurn(session, {
+                apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
+                tools, permissions, toolCtx, signal: controller.signal, spawnAgent,
+              });
+              await saveSession(session);
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              printError(`turn failed: ${msg}`);
+            } finally {
+              turnAbort.current = null;
+            }
+            continue;
+          }
+          // Not a skill either: give a skill-aware hint.
+          printError(`unknown command /${inv.name} (use /skill to pick one)`);
+          continue;
+        }
         if (lowerCmd === "retry") {
           const idx = lastUserIndex(session.messages);
           if (idx < 0) {
@@ -369,7 +419,8 @@ export async function runChat(args: ChatArgs): Promise<void> {
           }
           continue;
         }
-        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi, reasoning: { get: () => reasoning, set: setReasoning }, effort: { get: () => reasoningEffort, set: setReasoningEffort }, context: { get: () => maxContext, set: setMaxContext }, permissions: permsApi });
+        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi, reasoning: { get: () => reasoning, set: setReasoning }, effort: { get: () => reasoningEffort, set: setReasoningEffort }, context: { get: () => maxContext, set: setMaxContext }, permissions: permsApi, prefillHolder });
+        if (prefillHolder.value) { prefill = prefillHolder.value; prefillHolder.value = ""; }
         if (handled === "exit") break;
         continue;
       }
@@ -599,6 +650,9 @@ export interface SlashCtx {
   effort: { get: () => "high" | "max" | undefined; set: (e: "high" | "max") => Promise<void> };
   context: { get: () => number | undefined; set: (n: number) => Promise<void> };
   permissions: PermsApi;
+  /** Lets a slash command (e.g. /skill picker) request the next prompt be
+   *  pre-filled with the given text (e.g. "/skillname "). */
+  prefillHolder: { value: string };
 }
 
 /** Permission API handed to the /allow slash command. */
@@ -766,8 +820,9 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
           writeLine(paint.gray("create one: deepseek skill create <name>"));
           return "continue";
         }
-        // Interactive arrow-key picker in a TTY: selecting a skill activates it
-        // so subsequent turns prioritize its instructions.
+        // Interactive arrow-key picker in a TTY. Selecting a skill pre-fills
+        // the next prompt with "/<skill> " so the user types the task inline;
+        // submitting that line activates the skill and runs the task.
         const isTTY = process.stdin.isTTY === true && process.stdout.isTTY === true;
         if (isTTY) {
           const opts = [
@@ -777,17 +832,14 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
               value: e.name,
             })),
           ];
-          const picked = await selectOption("Select a skill to activate", opts, 1);
+          const picked = await selectOption("Select a skill, then type your task", opts, 1);
           if (picked === "__clear__") {
             ctx.skills.clear();
             printSystem("all skills deactivated", "yellow");
           } else if (picked) {
-            if (active.has(picked)) {
-              printSystem(`skill '${picked}' already active`, "green");
-            } else {
-              await ctx.skills.toggle(picked);
-              printSystem(`skill '${picked}' activated — prioritized for upcoming turns`, "green");
-            }
+            // Pre-fill the input area with "/<skill> " for inline task entry.
+            ctx.prefillHolder.value = `/${picked} `;
+            printSystem(`skill '${picked}' — type your task after /${picked}`, "green");
           } else {
             printSystem("skill selection cancelled", "yellow");
           }
@@ -1016,6 +1068,21 @@ export const SLASH_COMMANDS = [
 export function completeSlash(line: string): string[] {
   if (!line.startsWith("/")) return [];
   return SLASH_COMMANDS.map((c) => "/" + c).filter((c) => c.startsWith(line));
+}
+
+/**
+ * Parse a "/<skillname> <task>" invocation line. Returns null when the line
+ * isn't /-prefixed or the first token is a builtin slash command (so skills
+ * can't shadow /model, /skill, …). Does NOT verify the skill exists — the
+ * caller does that via readSkill(). Pure/testable.
+ */
+export function parseSlashSkillInvocation(input: string): { name: string; task: string } | null {
+  if (!input.startsWith("/")) return null;
+  const name = input.slice(1).split(/\s+/)[0] ?? "";
+  if (!name) return null;
+  if (SLASH_COMMANDS.includes(name.toLowerCase())) return null;
+  const task = input.slice(("/" + name).length).trim();
+  return { name, task };
 }
 
 function printSlashHelp(): void {

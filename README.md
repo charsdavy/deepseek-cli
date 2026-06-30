@@ -83,7 +83,7 @@ deepseek config                                 # show merged config
 | `/allow [tool\|all\|reset]` | One-key authorize a tool (e.g. `bash`) for the session |
 | `/log`           | Show the log file path                                  |
 | `/new`           | Start a fresh session — clears context, new id         |
-| `/skill [name]`  | List skills, or toggle a skill on/off                  |
+| `/skill [name]`  | Picker → pre-fills `/<skill> ` for inline task entry    |
 | `/mcp [name]`    | List MCP servers, or toggle a server's tools           |
 | `/tokens`        | Show token usage (estimate + real API totals)          |
 | `/tools`         | List registered tools                                    |
@@ -171,12 +171,15 @@ Skill files are discovered from the deepseek, Claude Code, Codex, and codemaker 
 ```bash
 # scaffold a skill (codex-style template: frontmatter + When/Instructions/Examples/Constraints)
 deepseek skill create tdd
-# edit ~/.deepseek-cli/skills/tdd.md, then inside the REPL:
-/skill            # arrow-key picker (↑/↓ · enter) — selecting activates a skill so
-                  # subsequent turns prioritize its instructions; "(none)" clears all
+# then inside the REPL:
+/skill            # arrow-key picker (↑/↓ · enter); selecting a skill PRE-FILLS
+                  # the input with "/<skill> " — type your task after it and Enter
+ /tdd write a failing test for X, then implement   # /<skill> <task> invocation
 /skill tdd        # toggle a skill on/off directly
 /skill clear      # deactivate all skills
 ```
+
+Two ways to use a skill: `/skill` → pick → the prompt pre-fills `/<skill> ` so you continue typing the task inline; or type `/<skill> <task>` directly. On submit the skill is activated (folded into the system prompt for the turn) and the task runs under it. Builtin slash commands (`/model`, `/skill`, …) are never shadowed by a same-named skill.
 
 > `deepseek init` scaffolds an `AGENTS.md` template (repo-level instructions); skills are the per-session, toggleable complement.
 
