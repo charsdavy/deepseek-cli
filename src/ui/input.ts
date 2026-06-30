@@ -155,3 +155,78 @@ export function closeReadline(): void {
   rl?.close();
   rl = null;
 }
+
+// ---- Interactive arrow-key picker ----
+
+export interface SelectOption {
+  label: string;
+  value: string;
+}
+
+/**
+ * Render an interactive arrow-key selector. ↑/↓ (or j/k) move, Enter confirms,
+ * Esc/Ctrl-C cancels. Returns the chosen value, or null when cancelled or when
+ * stdin/stdout isn't a TTY (caller should fall back to a plain listing).
+ */
+export async function selectOption(
+  title: string,
+  options: SelectOption[],
+  startAt = 0,
+): Promise<string | null> {
+  // input/output here are process.stdin/stdout (imported at top of file).
+  const tty = input as NodeJS.ReadStream & { isTTY?: boolean; isRaw?: boolean; setRawMode?: (m: boolean) => void };
+  if (options.length === 0) return null;
+  if (tty.isTTY !== true || output.isTTY !== true) return null;
+
+  const savedRaw = tty.isRaw ?? false;
+  tty.setRawMode?.(true);
+  tty.resume();
+
+  const N = options.length;
+  let idx = Math.max(0, Math.min(startAt, N - 1));
+
+  const lineFor = (i: number): string => {
+    const sel = i === idx;
+    const marker = sel ? "❯ " : "  ";
+    const body = options[i].label;
+    return sel ? `\x1b[36m\x1b[1m${marker}${body}\x1b[0m` : `\x1b[2m${marker}${body}\x1b[0m`;
+  };
+
+  const draw = (initial: boolean): void => {
+    if (!initial) output.write(`\x1b[${N}A`); // move up to the first option line
+    for (let i = 0; i < N; i++) {
+      output.write(`\r\x1b[K${lineFor(i)}\n`);
+    }
+  };
+
+  output.write(`${title}\n`);
+  output.write(`\x1b[2m  ↑/↓ navigate · enter select · esc cancel\x1b[0m\n`);
+  draw(true);
+
+  return new Promise<string | null>((resolve) => {
+    const cleanup = (): void => {
+      tty.off("data", onData);
+      tty.setRawMode?.(savedRaw);
+      output.write("\x1b[0m");
+    };
+    const onData = (buf: Buffer): void => {
+      const bytes = Array.from(buf.values());
+      // Arrow keys arrive as ESC [ A / ESC [ B.
+      if (bytes.length >= 3 && bytes[0] === 0x1b && bytes[1] === 0x5b) {
+        if (bytes[2] === 0x41) { idx = (idx - 1 + N) % N; draw(false); return; }
+        if (bytes[2] === 0x42) { idx = (idx + 1) % N; draw(false); return; }
+        return; // ignore left/right and other CSI sequences
+      }
+      const b = bytes[0];
+      if (b === 0x1b || b === 0x03) { cleanup(); resolve(null); return; } // esc / ctrl-c
+      if (b === 0x0d || b === 0x0a) { cleanup(); resolve(options[idx].value); return; } // enter
+      if (b === 0x6b) { idx = (idx - 1 + N) % N; draw(false); return; } // k
+      if (b === 0x6a) { idx = (idx + 1) % N; draw(false); return; } // j
+      if (b >= 0x31 && b <= 0x39) { // 1-9 quick-select
+        const n = b - 0x31;
+        if (n < N) { idx = n; draw(false); }
+      }
+    };
+    tty.on("data", onData);
+  });
+}

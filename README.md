@@ -53,7 +53,7 @@ Copy the `./dist/deepseek` binary somewhere on your `PATH`.
 deepseek auth                                   # one-time API key setup
 deepseek                                        # interactive REPL
 deepseek "look at src/ and summarize the architecture"
-deepseek -m deepseek-reasoner "prove that 7 is prime"
+deepseek -m deepseek-v4-pro "prove that 7 is prime"
 deepseek --yolo "fix the failing tests"         # auto-approve tool calls
 deepseek --approval-mode auto "reformat src/"  # same as --yolo, explicit
 deepseek --max-iterations 50 "long refactor"    # raise the agent loop cap
@@ -72,7 +72,7 @@ deepseek config                                 # show merged config
 | `/help`          | Show available commands                                  |
 | `/exit`          | Quit the session                                         |
 | `/clear`         | Wipe conversation history (system prompt retained)      |
-| `/model [name]`  | Show models, or switch (catalog name or any model id)   |
+| `/model [name]`  | Arrow-key model picker, or switch to a specific id          |
 | `/new`           | Start a fresh session — clears context, new id         |
 | `/skill [name]`  | List skills, or toggle a skill on/off                  |
 | `/mcp [name]`    | List MCP servers, or toggle a server's tools           |
@@ -118,6 +118,17 @@ Configuration is read from `~/.deepseek-cli/config.json` (file mode `0600`). Env
 | `--verbose`                      | Verbose logging                                                    |
 
 > During a turn, **Ctrl-C** aborts the in-flight request cleanly; a second Ctrl-C force-quits.
+
+### Models
+
+| Model id            | Notes                                            |
+| ------------------- | ------------------------------------------------ |
+| `deepseek-v4-flash` | Fast/lightweight; non-thinking default (default) |
+| `deepseek-v4-pro`   | Flagship; thinking default                       |
+| `deepseek-chat`     | Legacy; **deprecating 2026-07-24**                |
+| `deepseek-reasoner` | Legacy reasoning; **deprecating 2026-07-24**      |
+
+`/model` launches an **arrow-key picker** (↑/↓ · enter · esc) in a TTY; `/model <id>` switches directly and accepts any model id (useful with `--base-url` for other providers). The `thinking:{type:"enabled"}` request flag is sent automatically when reasoning is on.
 
 ### Project-level instructions
 

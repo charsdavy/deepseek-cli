@@ -3,6 +3,7 @@ import { handleSlashCommand } from "../src/commands/chat.ts";
 import { newSession } from "../src/session/store.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { setOutputSilent } from "../src/ui/render.ts";
+import { selectOption } from "../src/ui/input.ts";
 import type { SlashCtx } from "../src/commands/chat.ts";
 import type { Tool } from "../src/tools/types.ts";
 
@@ -63,5 +64,13 @@ describe("/model slash command", () => {
     expect(r).toBe("continue");
     expect(setModelCalls).toEqual(["gpt-4o-mini"]);
     expect(session.model).toBe("gpt-4o-mini");
+  });
+});
+
+describe("selectOption picker", () => {
+  it("returns null in a non-TTY (test) environment, signaling fallback to listing", async () => {
+    const r = await selectOption("pick", [{ label: "a", value: "a" }, { label: "b", value: "b" }]);
+    // In the test runner stdin is not a TTY → no interactive picker.
+    expect(r).toBeNull();
   });
 });

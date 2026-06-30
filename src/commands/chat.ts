@@ -18,7 +18,7 @@ import { listSkills, readSkill } from "../skills/store.ts";
 import { McpRegistry, loadMcpConfig } from "../mcp/registry.ts";
 import { paint, symbol } from "../ui/theme.ts";
 import { blank, printBordered, printError, printSeparator, printSystem, printTip, setOutputSilent, writeLine } from "../ui/render.ts";
-import { askMultiline, closeReadline } from "../ui/input.ts";
+import { askMultiline, closeReadline, selectOption } from "../ui/input.ts";
 import { spinner } from "../ui/spinner.ts";
 
 export interface ChatArgs {
@@ -513,6 +513,25 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
     case "model": {
       const target = rest[0];
       if (!target) {
+        // Interactive arrow-key picker when a TTY is available; otherwise list.
+        const isTTY = process.stdin.isTTY === true && process.stdout.isTTY === true;
+        if (isTTY) {
+          const opts = MODELS.map((m) => ({
+            label: `${pad(m.id, 20)} ${paint.gray(m.description)}`,
+            value: m.id,
+          }));
+          const cur = opts.findIndex((o) => o.value === session.model);
+          const picked = await selectOption("Select model", opts, Math.max(0, cur));
+          if (picked) {
+            ctx.setModel(picked);
+            const note = isReasoningModel(picked) ? " (reasoning on)" : "";
+            printSystem(`switched model to ${picked}${note}`, "green");
+          } else {
+            printSystem("model switch cancelled", "yellow");
+          }
+          return "continue";
+        }
+        // Non-TTY fallback: plain listing.
         writeLine(paint.gray("available models:"));
         for (const m of MODELS) {
           const cur = m.id === session.model ? paint.green("← current") : "";
@@ -527,7 +546,6 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
         const note = known.thinking ? " (reasoning on)" : isReasoningModel(target) ? " (reasoning on)" : "";
         printSystem(`switched model to ${target}${note}`, "green");
       } else {
-        // Non-catalog model (e.g. used via --base-url with another provider).
         printSystem(`switched model to ${target} (non-catalog; reasoning defaults off)`, "yellow");
       }
       return "continue";
