@@ -7,9 +7,11 @@ import { listSkills, readSkill, skillDirs } from "../src/skills/store.ts";
 const ORIG_DS = process.env.DEEPSEEK_SKILLS_DIR;
 const ORIG_CC = process.env.CLAUDE_CONFIG_DIR;
 const ORIG_CX = process.env.CODEX_HOME;
+const ORIG_CM = process.env.CODEMAKER_HOME;
 let globalDir: string;
 let claudeHome: string;
 let codexHome: string;
+let codemakerHome: string;
 let projectDir: string;
 let cwd: string;
 
@@ -18,15 +20,17 @@ beforeEach(async () => {
   globalDir = await fs.mkdtemp(path.join(os.tmpdir(), "ds-skill-global-"));
   claudeHome = await fs.mkdtemp(path.join(os.tmpdir(), "ds-skill-claude-"));
   codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "ds-skill-codex-"));
+  codemakerHome = await fs.mkdtemp(path.join(os.tmpdir(), "ds-skill-codemaker-"));
   projectDir = path.join(cwd, ".deepseek", "skills");
   await fs.mkdir(projectDir, { recursive: true });
   process.env.DEEPSEEK_SKILLS_DIR = globalDir;
   process.env.CLAUDE_CONFIG_DIR = claudeHome;
   process.env.CODEX_HOME = codexHome;
+  process.env.CODEMAKER_HOME = codemakerHome;
 });
 
 afterEach(async () => {
-  for (const [k, v] of Object.entries({ DEEPSEEK_SKILLS_DIR: ORIG_DS, CLAUDE_CONFIG_DIR: ORIG_CC, CODEX_HOME: ORIG_CX })) {
+  for (const [k, v] of Object.entries({ DEEPSEEK_SKILLS_DIR: ORIG_DS, CLAUDE_CONFIG_DIR: ORIG_CC, CODEX_HOME: ORIG_CX, CODEMAKER_HOME: ORIG_CM })) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
@@ -34,6 +38,7 @@ afterEach(async () => {
     fs.rm(globalDir, { recursive: true, force: true }),
     fs.rm(claudeHome, { recursive: true, force: true }),
     fs.rm(codexHome, { recursive: true, force: true }),
+    fs.rm(codemakerHome, { recursive: true, force: true }),
     fs.rm(cwd, { recursive: true, force: true }),
   ]);
 });
@@ -75,6 +80,26 @@ describe("listSkills", () => {
     const byName = new Map(list.map((s) => [s.name, s.source] as const));
     expect(byName.get("cc")).toBe("claude");
     expect(byName.get("cx")).toBe("codex");
+  });
+
+  it("discovers directory-layout skills (<name>/SKILL.md), like Claude Code", async () => {
+    // A Claude Code skill lives at ~/.claude/skills/<name>/SKILL.md
+    const skillDir = path.join(claudeHome, "skills", "feedback-system");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "---\nname: feedback-system\n---\n# handle feedback\nDo the thing.");
+    // non-SKILL directories are ignored
+    await fs.mkdir(path.join(claudeHome, "skills", "notaskill"), { recursive: true });
+
+    const list = await listSkills(cwd);
+    const entry = list.find((s) => s.name === "feedback-system");
+    expect(entry).toBeDefined();
+    expect(entry!.source).toBe("claude");
+    expect(entry!.path.endsWith("feedback-system/SKILL.md")).toBe(true);
+    expect(list.find((s) => s.name === "notaskill")).toBeUndefined();
+
+    const read = await readSkill("feedback-system", cwd);
+    expect(read?.content).toContain("# handle feedback");
+    expect(read?.content).toContain("_skill directory:"); // footer pointer
   });
 
   it("returns [] when no skill dirs exist", async () => {

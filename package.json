@@ -1,6 +1,6 @@
 {
   "name": "deepseek-cli",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "description": "An agentic command-line AI coding assistant powered by DeepSeek.",
   "type": "module",
   "bin": {
