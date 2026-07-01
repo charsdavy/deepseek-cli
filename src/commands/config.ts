@@ -13,6 +13,7 @@ export async function runConfigCommand(): Promise<void> {
     maxTokens: cfg.maxTokens ?? "(unset)",
     baseUrl: cfg.baseUrl ?? "https://api.deepseek.com",
     apiKey: cfg.apiKey ? redact(cfg.apiKey) : paint.gray("(unset) — run `deepseek auth`"),
+    promptLog: cfg.promptLog === false ? paint.yellow("off") : paint.green("on"),
   };
   blank();
   const body = Object.entries(safe)

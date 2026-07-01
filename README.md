@@ -85,6 +85,7 @@ deepseek config                                 # show merged config
 | `/context [tokens]` | Show/set the context-trim budget                              |
 | `/allow [tool\|all\|reset]` | One-key authorize a tool (e.g. `bash`) for the session |
 | `/log`           | Show the log file path                                  |
+| `/promptlog [on\|off\|recent\|search\|clear]` | Per-turn prompt logging for retrospective optimization |
 | `/new`           | Start a fresh session — clears context, new id         |
 | `/skill [name]`  | Picker → pre-fills `/<skill> ` for inline task entry    |
 | `/mcp [name]`    | List MCP servers, or toggle a server's tools           |
@@ -131,6 +132,7 @@ Configuration is read from `~/.deepseek-cli/config.json` (file mode `0600`). Env
 | `--max-context <tokens>`         | Operational context-trim budget (default 60000)                   |
 | `--log-level <debug\|info\|warn\|error>` | File log level (default info; --verbose=debug)            |
 | `--no-log`                       | Disable file logging entirely                              |
+| `--no-prompt-log`                | Disable per-turn prompt logging this session              |
 | `--verbose`                      | Verbose logging                                                    |
 
 > During a turn, **Ctrl-C** aborts the in-flight request cleanly; a second Ctrl-C force-quits.
@@ -282,6 +284,23 @@ What's logged (info): startup (model/cwd/flags), each agent-loop start/end + tok
 
 What's logged (debug, `--verbose`): per-iteration totals (`iterMs`/content/reasoning/toolCalls), API timing (`fetchMs`/`ttfbMs`/`streamMs`/`chunks`/`usage`, correlated by `reqId`), and retry attempts (`reason`/`attempt`/`delayMs`). These are the inputs for the perf report below.
 
+### Prompt log (prompt optimization)
+
+Every turn is also recorded as a single JSONL line in `~/.deepseek-cli/prompt-log.jsonl` — a lightweight, cross-session index focused on **prompt → outcome** correlation for retrospective prompt and system-prompt optimization. One line per turn, bounded to the most recent 2000 entries (oldest pruned automatically). Enabled by default; turn it off with `/promptlog off` (persists across sessions) or `--no-prompt-log` (this session only).
+
+Each entry records: the user's prompt text, the model + system-prompt variant used, reasoning mode/effort, iteration count, tool names invoked + count, real token usage, final-text length, whether the turn was aborted, and the wall-clock duration. The owning `sessionId` lets you load the full transcript from the session store if you need the complete conversation.
+
+```bash
+# inside the REPL:
+/promptlog                  # status: on/off, entry count, file path
+/promptlog recent 20        # show the 20 most recent entries
+/promptlog search refactor  # find turns whose prompt mentions "refactor"
+/promptlog off              # disable (saved as default for future sessions)
+/promptlog clear            # wipe the log file
+```
+
+Per-turn timing: turns that take **5s or more** also surface an `elapsed Xs` marker inline after the token-usage line, so you can perceive per-phase cost without digging into the log. Shorter turns stay clean.
+
 ### Performance report
 
 `scripts/perf-report.ts` aggregates a day's log into a quick perf summary — where time is going, which tools are slow, which API calls are slow, and retry/failure hotspots.
@@ -372,7 +391,8 @@ src/
 │   └── spinner.ts        # interval-based animated spinner
 ├── session/
 │   ├── store.ts          # session save / load / list / delete / search / prune
-│   └── history.ts        # prompt history (Up/Down recall, persisted)
+│   ├── history.ts        # prompt history (Up/Down recall, persisted)
+│   └── promptLog.ts      # per-turn prompt→outcome JSONL log (prompt optimization)
 ├── skills/
 │   └── store.ts          # skill discovery + reading (global + project .md files)
 ├── mcp/

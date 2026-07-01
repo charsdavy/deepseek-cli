@@ -16,6 +16,7 @@ import { ToolRegistry } from "../tools/registry.ts";
 import type { Tool, ToolContext, ToolResult } from "../tools/types.ts";
 import { newSession, newSessionId, loadSession, listSessions, searchSessions, saveSession, type Session } from "../session/store.ts";
 import { loadHistory, appendHistory } from "../session/history.ts";
+import { appendPromptLog, buildEntry, countPromptLog, loadPromptLog, searchPromptLog, clearPromptLog, promptLogFile, type PromptLogEntry } from "../session/promptLog.ts";
 import { listSkills, readSkill } from "../skills/store.ts";
 import { McpRegistry, loadMcpConfig } from "../mcp/registry.ts";
 import type { McpServerConfig } from "../mcp/registry.ts";
@@ -49,6 +50,7 @@ export interface ChatArgs {
   mcpArgs?: string[];
   skillArgs?: string[];
   verbose?: boolean;
+  noPromptLog?: boolean;
 }
 
 export async function runChat(args: ChatArgs): Promise<void> {
@@ -69,6 +71,8 @@ export async function runChat(args: ChatArgs): Promise<void> {
   // Thinking intensity + context budget: CLI flag wins, else config, else defaults.
   let reasoningEffort = args.reasoningEffort ?? cfg.reasoningEffort;
   let maxContext = args.maxContext ?? cfg.maxContext;
+  // Prompt logging: default on (config), disabled by --no-prompt-log or config.
+  let promptLogOn = args.noPromptLog !== true && cfg.promptLog !== false;
   // CLI base-url override wins over config; falls back to config's baseUrl.
   const baseUrl = args.baseUrl ?? cfg.baseUrl;
   // Resolve the permission mode. `--yolo` is shorthand for --approval-mode yolo.
@@ -158,6 +162,14 @@ export async function runChat(args: ChatArgs): Promise<void> {
     await saveConfig(cfg);
   };
 
+  // Toggle per-turn prompt logging (persisted as the default for future
+  // sessions). The /promptlog slash command uses this.
+  const setPromptLog = async (on: boolean): Promise<void> => {
+    promptLogOn = on;
+    cfg.promptLog = on;
+    await saveConfig(cfg);
+  };
+
   // Sub-agent spawner surfaced to the `task` tool. Runs a nested agent loop
   // silently with its own (small) context + iteration budget; multiple `task`
   // calls in one turn run in parallel via the parent loop's Promise.all.
@@ -236,6 +248,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
         tools, permissions, toolCtx,
         signal: turn.controller.signal,
         spawnAgent,
+        promptLog: { get: () => false }, // side turns are throwaway; never logged
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -387,6 +400,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
         await driveTurn(session, {
           apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
           tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
+          promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant,
         });
       }
       await saveSession(session);
@@ -467,6 +481,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
               await driveTurn(session, {
                 apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
                 tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
+                promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant,
               });
               await saveSession(session);
             } catch (e) {
@@ -494,6 +509,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
             await driveTurn(session, {
               apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
               tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
+              promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant,
             });
             await saveSession(session);
           } catch (e) {
@@ -504,7 +520,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
           }
           continue;
         }
-        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi, reasoning: { get: () => reasoning, set: setReasoning }, effort: { get: () => reasoningEffort, set: setReasoningEffort }, context: { get: () => maxContext, set: setMaxContext }, permissions: permsApi, prefillHolder, runSideTurn });
+        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi, reasoning: { get: () => reasoning, set: setReasoning }, effort: { get: () => reasoningEffort, set: setReasoningEffort }, context: { get: () => maxContext, set: setMaxContext }, promptLog: { get: () => promptLogOn, set: setPromptLog }, permissions: permsApi, prefillHolder, runSideTurn });
         if (prefillHolder.value) { prefill = prefillHolder.value; prefillHolder.value = ""; }
         if (handled === "exit") break;
         continue;
@@ -520,6 +536,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
         await driveTurn(session, {
           apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
           tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
+          promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant,
         });
         await saveSession(session);
       } catch (e) {
@@ -557,13 +574,22 @@ interface TurnDeps {
   toolCtx: ToolContext;
   signal?: AbortSignal;
   spawnAgent?: (prompt: string, opts?: { description?: string; cwd?: string }) => Promise<string>;
+  /** Whether per-turn prompt logging is enabled (runtime-toggleable). */
+  promptLog?: { get: () => boolean };
+  /** System-prompt variant tag to stamp on log entries. */
+  promptVariant?: string;
 }
 
 async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
   const renderer = makeStreamRenderer({ showReasoning: deps.reasoning === true, model: deps.model });
+  const turnStart = performance.now();
+  // Collect tool names executed during the turn for the prompt log entry.
+  const toolNames: string[] = [];
+  let toolCallCount = 0;
 
   const onToolEnd = (name: string, result: ToolResult) => {
-    void name;
+    toolCallCount++;
+    if (!toolNames.includes(name)) toolNames.push(name);
     if (result.uiSummary) {
       writeLine(`  ${paint.gray(result.uiSummary)}`);
     }
@@ -609,19 +635,81 @@ async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
     session.tokenUsage = accumulateUsage(session.tokenUsage, result.usage);
   }
 
-  // Surface per-turn usage to the user.
+  const durationMs = Math.round(performance.now() - turnStart);
+
+  // Surface per-turn usage to the user, plus the elapsed duration when the
+  // turn was non-trivial (>= 5s) so the user can perceive per-phase cost.
+  const parts: string[] = [];
   if (result.usage && result.usage.totalTokens) {
     const u = result.usage;
-    writeLine(
-      paint.gray(
-        `  tokens: ${u.promptTokens ?? "?"} prompt → ${u.completionTokens ?? "?"} completion` +
-          ` · session ${session.tokenUsage?.total ?? u.totalTokens} total` +
-          (result.aborted ? " · interrupted" : ""),
-      ),
+    parts.push(
+      `tokens: ${u.promptTokens ?? "?"} prompt → ${u.completionTokens ?? "?"} completion` +
+        ` · session ${session.tokenUsage?.total ?? u.totalTokens} total`,
     );
+  }
+  if (durationMs >= 5000) {
+    parts.push(`elapsed ${fmtDuration(durationMs)}`);
+  }
+  if (result.aborted) parts.push("interrupted");
+  if (parts.length > 0) {
+    writeLine(paint.gray("  " + parts.join(" · ")));
   } else if (result.aborted) {
     printSystem("turn interrupted", "yellow");
   }
+
+  // Record the turn in the prompt log (if enabled) for retrospective
+  // prompt/system-prompt optimization. Best-effort, fire-and-forget.
+  if (deps.promptLog?.get() !== false) {
+    const promptText = lastUserText(session.messages);
+    if (promptText) {
+      const turnIndex = countUserMessages(session.messages);
+      appendPromptLog(buildEntry({
+        sessionId: session.id,
+        turn: turnIndex,
+        prompt: promptText,
+        model: deps.model,
+        promptVariant: deps.promptVariant ?? session.promptVariant,
+        reasoning: deps.reasoning,
+        reasoningEffort: deps.reasoningEffort,
+        iterations: result.iterations,
+        toolCalls: toolCallCount,
+        tools: toolNames,
+        usage: result.usage,
+        finalTextLen: result.finalText.length,
+        aborted: result.aborted,
+        durationMs,
+      })).catch(() => {});
+    }
+  }
+}
+
+/** Format a millisecond duration into a compact, human-readable string. */
+function fmtDuration(ms: number): string {
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const rem = Math.round(s - m * 60);
+  return `${m}m${rem}s`;
+}
+
+/** Extract the last user message's text content (for the prompt log). */
+function lastUserText(messages: ChatMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "user") {
+      return typeof m.content === "string" ? m.content : "";
+    }
+  }
+  return null;
+}
+
+/** Count user messages in the conversation (= the turn index of the latest). */
+function countUserMessages(messages: ChatMessage[]): number {
+  let n = 0;
+  for (const m of messages) {
+    if (m.role === "user") n++;
+  }
+  return n;
 }
 
 function accumulateUsage(
@@ -737,6 +825,8 @@ export interface SlashCtx {
   reasoning: { get: () => boolean; set: (on: boolean) => Promise<void> };
   effort: { get: () => "high" | "max" | undefined; set: (e: "high" | "max") => Promise<void> };
   context: { get: () => number | undefined; set: (n: number) => Promise<void> };
+  /** Per-turn prompt logging toggle (default on; off = no local recording). */
+  promptLog: { get: () => boolean; set: (on: boolean) => Promise<void> };
   permissions: PermsApi;
   /** Lets a slash command (e.g. /skill picker) request the next prompt be
    *  pre-filled with the given text (e.g. "/skillname "). */
@@ -1103,6 +1193,56 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
     case "log":
       printSystem(`log file: ${log.filePath}`, "blue");
       return "continue";
+    case "promptlog": {
+      const arg = rest[0]?.toLowerCase();
+      if (!arg) {
+        const state = ctx.promptLog.get() ? paint.green("on") : paint.yellow("off");
+        const count = await countPromptLog();
+        printSystem(`promptlog ${state} · ${count} entries · ${promptLogFile()}`, ctx.promptLog.get() ? "green" : "yellow");
+        return "continue";
+      }
+      if (arg === "on" || arg === "true" || arg === "1") {
+        await ctx.promptLog.set(true);
+        printSystem("promptlog on (saved as default)", "green");
+        return "continue";
+      }
+      if (arg === "off" || arg === "false" || arg === "0") {
+        await ctx.promptLog.set(false);
+        printSystem("promptlog off (saved as default) — no per-turn recording", "yellow");
+        return "continue";
+      }
+      if (arg === "clear") {
+        await clearPromptLog();
+        printSystem("prompt log cleared", "yellow");
+        return "continue";
+      }
+      if (arg === "recent" || arg === "list") {
+        const n = rest[1] ? Number(rest[1]) : 10;
+        const entries = await loadPromptLog(Number.isFinite(n) && n > 0 ? n : 10);
+        if (entries.length === 0) {
+          writeLine(paint.gray("(prompt log is empty)"));
+        } else {
+          for (const e of entries) renderPromptLogEntry(e);
+        }
+        return "continue";
+      }
+      if (arg === "search") {
+        const q = rest.slice(1).join(" ").trim();
+        if (!q) {
+          printError("usage: /promptlog search <query>");
+          return "continue";
+        }
+        const entries = await searchPromptLog(q, 20);
+        if (entries.length === 0) {
+          writeLine(paint.gray(`(no entries matching "${q}")`));
+        } else {
+          for (const e of entries) renderPromptLogEntry(e);
+        }
+        return "continue";
+      }
+      printError("usage: /promptlog [on|off|recent [n]|search <q>|clear]");
+      return "continue";
+    }
     case "context": {
       const arg = rest[0];
       if (!arg) {
@@ -1200,7 +1340,7 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
 // Slash command names (incl. aliases) for Tab completion in the REPL.
 export const SLASH_COMMANDS = [
   "help", "?", "exit", "quit", "q", "clear", "btw", "fast", "think", "model", "reasoning", "thinking",
-  "context", "allow", "log", "new", "skill", "mcp", "tokens", "size", "tools",
+  "context", "allow", "log", "promptlog", "new", "skill", "mcp", "tokens", "size", "tools",
   "system", "save", "undo", "retry", "export", "sessions", "history",
 ];
 
@@ -1240,6 +1380,7 @@ function printSlashHelp(): void {
     ["/context [tokens]", "show/set the context-trim budget"],
     ["/allow [tool|all|reset]", "one-key authorize a tool (e.g. bash) for the session"],
     ["/log", "show the log file path"],
+    ["/promptlog [on|off|recent|search|clear]", "per-turn prompt logging for optimization"],
     ["/new", "start a fresh session, clearing context"],
     ["/skill [name]", "list skills, or toggle a skill on/off"],
     ["/mcp [name]", "list MCP servers, or toggle a server's tools"],
@@ -1338,4 +1479,27 @@ function exportTranscript(session: Session): string {
     out.push(`---\n_tokens: ${u.prompt} prompt + ${u.completion} completion = ${u.total} over ${u.turns} turns_`);
   }
   return out.join("\n");
+}
+
+/** Render a single prompt-log entry (one line of context + the prompt). */
+function renderPromptLogEntry(e: PromptLogEntry): void {
+  const meta: string[] = [
+    `${e.turn}`,
+    fmtDuration(e.durationMs),
+    `${e.iterations} iter`,
+    `${e.toolCalls} tools` + (e.tools.length ? ` [${e.tools.join(",")}]` : ""),
+  ];
+  if (e.usage) meta.push(`${e.usage.total} tok`);
+  const promptPreview = truncatePreview(e.prompt, 80);
+  writeLine(
+    `  ${paint.cyan(e.ts)} ${paint.gray(meta.join(" · "))}` +
+      (e.aborted ? ` ${paint.yellow("interrupted")}` : ""),
+  );
+  writeLine(`    ${paint.gray(promptPreview)}`);
+}
+
+function truncatePreview(s: string, n: number): string {
+  const one = s.replace(/\s+/g, " ").trim();
+  if (one.length <= n) return one;
+  return one.slice(0, n - 1) + "…";
 }

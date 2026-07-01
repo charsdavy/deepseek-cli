@@ -34,12 +34,16 @@ export interface CliConfig {
   reasoningEffort?: "high" | "max";
   /** Operational context-trim budget in tokens (default 60000). */
   maxContext?: number;
+  /** Whether to record per-turn prompt logs for retrospective prompt
+   *  optimization. Default true (enabled). Toggled via /promptlog. */
+  promptLog?: boolean;
 }
 
 export const DEFAULT_CONFIG: CliConfig = {
   defaultModel: "deepseek-chat",
   approvalMode: "ask",
   temperature: 0.7,
+  promptLog: true,
 };
 
 export async function ensureDirs(): Promise<void> {
@@ -130,6 +134,10 @@ function normalizeConfig(raw: Record<string, unknown>): Partial<CliConfig> {
   if (typeof raw.maxContext === "number" && Number.isInteger(raw.maxContext) && raw.maxContext >= 4000) {
     out.maxContext = raw.maxContext;
   } else if (raw.maxContext !== undefined) dropped.push("maxContext");
+
+  if (typeof raw.promptLog === "boolean") {
+    out.promptLog = raw.promptLog;
+  } else if (raw.promptLog !== undefined) dropped.push("promptLog");
 
   if (dropped.length > 0) {
     printSystem(`Config: ignoring invalid field(s): ${dropped.join(", ")}`, "yellow");

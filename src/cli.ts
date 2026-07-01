@@ -30,6 +30,7 @@ export interface ParsedArgs {
   mcpArgs?: string[];
   skillArgs?: string[];
   verbose?: boolean;
+  noPromptLog?: boolean;
 }
 
 const HELP = `deepseek — an agentic AI coding CLI powered by DeepSeek.
@@ -61,12 +62,13 @@ Options:
                                          (no streaming/ANSI) for scripting / CI
       --no-mcp                           Do not load MCP servers this session
       --reasoning-effort <high|max>      Thinking intensity (default high; max = deeper)
-      --max-context <tokens>             Operational context-trim budget (default 60000)
-      --log-level <debug|info|warn|error> File log level (default info; --verbose=debug)
-      --no-log                           Disable file logging entirely
-      --verbose                          Verbose logging
-  -h, --help                             Show this help
-  -V, --version                          Print version
+       --max-context <tokens>             Operational context-trim budget (default 60000)
+       --log-level <debug|info|warn|error> File log level (default info; --verbose=debug)
+       --no-log                           Disable file logging entirely
+       --no-prompt-log                    Disable per-turn prompt logging this session
+       --verbose                          Verbose logging
+   -h, --help                             Show this help
+   -V, --version                          Print version
 
 Examples:
   deepseek                                # interactive REPL
@@ -178,6 +180,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
       }
       case "--no-log":
         out.noLog = true;
+        break;
+      case "--no-prompt-log":
+        out.noPromptLog = true;
         break;
       case "--temperature":
         out.temperature = Number(args[++i]);

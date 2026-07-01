@@ -84,6 +84,7 @@ async function main(): Promise<void> {
         reasoningEffort: args.reasoningEffort,
         maxContext: args.maxContext,
         verbose: args.verbose,
+        noPromptLog: args.noPromptLog,
       });
       return;
   }

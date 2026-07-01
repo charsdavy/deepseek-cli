@@ -86,6 +86,7 @@ describe("/allow slash command", () => {
       reasoning: { get: () => true, set: async () => {} },
       effort: { get: () => "high", set: async () => {} },
       context: { get: () => 60000, set: async () => {} },
+      promptLog: { get: () => true, set: async () => {} },
       permissions: {
         dangerousTools: () => ["bash", "write_file", "edit_file"],
         isAllowed: (n: string) => allowed.includes(n),

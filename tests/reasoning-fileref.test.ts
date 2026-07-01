@@ -37,6 +37,7 @@ function ctx(): SlashCtx {
     },
     effort: { get: () => undefined, set: async () => {} },
     context: { get: () => undefined, set: async () => {} },
+    promptLog: { get: () => true, set: async () => {} },
   };
 }
 
