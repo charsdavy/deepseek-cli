@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { renderMarkdown, inline } from "../src/ui/render.ts";
+import { renderMarkdown, inline, StreamMarkdown } from "../src/ui/render.ts";
 
 // The renderer may emit ANSI color codes when stdout is a TTY; these tests
 // assert on color-independent substrings (text content + box-drawing markers)
@@ -60,5 +60,83 @@ describe("inline", () => {
 
   it("transforms a markdown link to include the label", () => {
     expect(inline("[label](https://x.com)")).toContain("label");
+  });
+});
+
+describe("StreamMarkdown", () => {
+  it("renders a heading line", () => {
+    const md = new StreamMarkdown();
+    const out = md.renderLine("## Section");
+    expect(out).toContain("Section");
+  });
+
+  it("renders an unordered list item with bullet", () => {
+    const md = new StreamMarkdown();
+    const out = md.renderLine("- item");
+    expect(out).toContain("•");
+    expect(out).toContain("item");
+  });
+
+  it("renders an ordered list item with number", () => {
+    const md = new StreamMarkdown();
+    const out = md.renderLine("3. third");
+    expect(out).toContain("3.");
+    expect(out).toContain("third");
+  });
+
+  it("renders a blockquote with bar prefix", () => {
+    const md = new StreamMarkdown();
+    const out = md.renderLine("> quoted");
+    expect(out).toContain("│");
+    expect(out).toContain("quoted");
+  });
+
+  it("renders inline code in a regular line", () => {
+    const md = new StreamMarkdown();
+    const out = md.renderLine("use `variable` here");
+    expect(out).toContain("variable");
+  });
+
+  it("tracks code fence state across lines", () => {
+    const md = new StreamMarkdown();
+    // Opening fence
+    const open = md.renderLine("```ts");
+    expect(open).toContain("┌");
+    expect(md.inCodeBlock).toBe(true);
+    // Inside fence — content has border
+    const code = md.renderLine("const x = 1;");
+    expect(code).toContain("│");
+    expect(code).toContain("const x = 1;");
+    // Closing fence
+    const close = md.renderLine("```");
+    expect(close).toContain("└");
+    expect(md.inCodeBlock).toBe(false);
+  });
+
+  it("renders plain text via inline formatting", () => {
+    const md = new StreamMarkdown();
+    const out = md.renderLine("just a normal line");
+    expect(out).toContain("just a normal line");
+  });
+
+  it("flush renders remaining partial line", () => {
+    const md = new StreamMarkdown();
+    const out = md.flush("partial line");
+    expect(out).toContain("partial line");
+  });
+
+  it("flush closes an unclosed code fence", () => {
+    const md = new StreamMarkdown();
+    md.renderLine("```ts");
+    md.renderLine("const x = 1;");
+    expect(md.inCodeBlock).toBe(true);
+    md.flush("");
+    expect(md.inCodeBlock).toBe(false);
+  });
+
+  it("renders a horizontal rule", () => {
+    const md = new StreamMarkdown();
+    const out = md.renderLine("---");
+    expect(out).toContain("─");
   });
 });

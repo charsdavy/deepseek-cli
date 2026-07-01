@@ -174,6 +174,91 @@ function termWidth(): number {
   return Math.min(120, process.stdout.columns ?? 80);
 }
 
+// ---- Streaming markdown renderer ----
+// Processes lines one at a time as they arrive from the model's stream,
+// applying the same block-level + inline formatting as renderMarkdown but
+// without needing the full text upfront. Tracks code-fence state across
+// lines so ``` blocks are rendered with borders incrementally.
+
+export class StreamMarkdown {
+  private inFence = false;
+
+  /** Render a single complete line (no trailing newline). Returns the
+   *  formatted string; the caller is responsible for writing it. */
+  renderLine(line: string): string {
+    if (this.inFence) {
+      if (/^```\s*$/.test(line)) {
+        this.inFence = false;
+        return paint.gray("└" + "─".repeat(Math.max(1, termWidth() - 1)));
+      }
+      return `${paint.gray("│")} ${paint.dim(line)}`;
+    }
+    // Opening code fence
+    const fence = line.match(/^```(\w+)?\s*$/);
+    if (fence) {
+      this.inFence = true;
+      const lang = fence[1] ?? "";
+      const header = lang ? paint.gray(`┌ ${lang} `) : paint.gray("┌ ");
+      return header + paint.dim("─".repeat(Math.max(1, termWidth() - headerVisible(header) - 1)));
+    }
+    // Horizontal rule
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
+      return paint.dim("─".repeat(termWidth()));
+    }
+    // Heading
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      const level = h[1].length;
+      const text = inline(h[2].trim());
+      if (level <= 2) return combine(paint.bold, paint.cyan)(text);
+      if (level === 3) return combine(paint.bold, paint.cyan)(text);
+      return paint.bold(text);
+    }
+    // Blockquote
+    if (/^>\s?/.test(line)) {
+      return `${paint.gray("│")} ${paint.italic(inline(line.replace(/^>\s?/, "")))}`;
+    }
+    // Unordered list
+    if (/^\s*[-*+]\s+/.test(line)) {
+      return `${paint.cyan(symbol.bullet)} ${inline(line.replace(/^\s*[-*+]\s+/, ""))}`;
+    }
+    // Ordered list
+    const ol = line.match(/^\s*(\d+)\.\s+(.*)$/);
+    if (ol) {
+      return `${paint.cyan(ol[1] + ".")} ${inline(ol[2])}`;
+    }
+    // Empty line
+    if (line.trim() === "") {
+      return "";
+    }
+    // Regular paragraph line
+    return inline(line);
+  }
+
+  /** Render the last partial line (no trailing newline). Same as renderLine
+   *  but guaranteed to be the final flush. Also closes an unclosed fence. */
+  flush(remaining: string): string {
+    let out = "";
+    if (remaining) {
+      out = this.renderLine(remaining);
+    }
+    // Close an unclosed fence at end of stream.
+    if (this.inFence) {
+      this.inFence = false;
+    }
+    return out;
+  }
+
+  /** True if currently inside a ``` code block. */
+  get inCodeBlock(): boolean {
+    return this.inFence;
+  }
+}
+
+function headerVisible(s: string): number {
+  return s.replace(/\x1b\[[0-9;]*m/g, "").length;
+}
+
 function truncateLine(s: string, max: number): string {
   if (s.length <= max) return s;
   return s.slice(0, max - 1) + "…";

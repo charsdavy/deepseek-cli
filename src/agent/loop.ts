@@ -11,7 +11,7 @@ import type { PermissionManager } from "./permissions.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
 import type { ToolContext, ToolResult } from "../tools/types.ts";
 import { paint, symbol } from "../ui/theme.ts";
-import { blank, printError, printSystem, printTip, printToolHeader, streamWrite, writeLine } from "../ui/render.ts";
+import { blank, printError, printSystem, printTip, printToolHeader, streamWrite, writeLine, StreamMarkdown } from "../ui/render.ts";
 import { spinner } from "../ui/spinner.ts";
 import { log } from "../log/logger.ts";
 
@@ -400,8 +400,20 @@ export interface StreamRenderOptions {
 export function makeStreamRenderer(opts: StreamRenderOptions) {
   let started = false;
   let inReasoning = false;
+  let lineBuf = "";
+  const md = new StreamMarkdown();
   const label = opts.model ?? "DeepSeek";
   const labelLine = () => writeLine(`${paint.bright.green(symbol.robot)} ${paint.bold(paint.green(label))}:`);
+
+  function flushLines(): void {
+    let nl: number;
+    while ((nl = lineBuf.indexOf("\n")) >= 0) {
+      const line = lineBuf.slice(0, nl);
+      lineBuf = lineBuf.slice(nl + 1);
+      streamWrite(md.renderLine(line) + "\n");
+    }
+  }
+
   return {
     onContentDelta(delta: string) {
       if (!started) {
@@ -411,12 +423,12 @@ export function makeStreamRenderer(opts: StreamRenderOptions) {
         started = true;
         inReasoning = false;
       } else if (inReasoning && opts.showReasoning) {
-        // Transition from reasoning trace to final content
         writeLine();
         labelLine();
         inReasoning = false;
       }
-      streamWrite(delta);
+      lineBuf += delta;
+      flushLines();
     },
     onReasoningDelta(delta: string) {
       if (!opts.showReasoning) return;
@@ -429,6 +441,15 @@ export function makeStreamRenderer(opts: StreamRenderOptions) {
       process.stdout.write(paint.dim(delta));
     },
     end() {
+      // Flush any remaining partial line
+      if (lineBuf) {
+        streamWrite(md.flush(lineBuf) + "\n");
+        lineBuf = "";
+      }
+      // Close an unclosed code fence
+      if (md.inCodeBlock) {
+        streamWrite(paint.gray("└" + "─".repeat(Math.max(1, 119))) + "\n");
+      }
       if (started) {
         writeLine();
         blank();
