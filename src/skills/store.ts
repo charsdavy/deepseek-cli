@@ -22,6 +22,10 @@ export interface SkillEntry {
   /** Which CLI's skill directory this came from. */
   source: SkillSource;
   path: string;
+  /** Short functional summary extracted from the skill's first heading or
+   *  paragraph. Shown in the /skill listing so the user knows what each
+   *  skill does without opening the file. */
+  description?: string;
 }
 
 export interface ActiveSkill {
@@ -91,7 +95,7 @@ export async function listSkills(cwd: string): Promise<SkillEntry[]> {
       if (existsSync(skillMd)) {
         if (seen.has(e.name)) continue;
         seen.add(e.name);
-        out.push({ name: e.name, source: label, path: skillMd });
+        out.push({ name: e.name, source: label, path: skillMd, description: await extractDescription(skillMd) });
         continue;
       }
       // Flat layout: <name>.md (also via existsSync so symlinked files work).
@@ -99,11 +103,47 @@ export async function listSkills(cwd: string): Promise<SkillEntry[]> {
         const name = e.name.slice(0, -3);
         if (seen.has(name)) continue;
         seen.add(name);
-        out.push({ name, source: label, path: path.join(dir, e.name) });
+        const skillPath = path.join(dir, e.name);
+        out.push({ name, source: label, path: skillPath, description: await extractDescription(skillPath) });
       }
     }
   }
   return out;
+}
+
+/** Extract a short functional summary from a skill file's first heading or
+ *  first paragraph line. Truncated to 80 chars. Best-effort: returns "" on
+ *  read failure or if no meaningful text is found. */
+async function extractDescription(filePath: string): Promise<string> {
+  let content: string;
+  try {
+    content = await fs.readFile(filePath, "utf-8");
+  } catch {
+    return "";
+  }
+  let lines = content.split("\n");
+  // Skip YAML frontmatter if present
+  if (lines[0]?.trim() === "---") {
+    const end = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
+    if (end > 0) lines = lines.slice(end + 1);
+  }
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    // First # heading — use the heading text (without the #'s)
+    const h = trimmed.match(/^#+\s+(.*)$/);
+    if (h) return truncateStr(h[1], 80);
+    // Skip HTML comments, horizontal rules, frontmatter delimiters
+    if (trimmed.startsWith("<!--") || trimmed.startsWith("---")) continue;
+    // First paragraph line
+    return truncateStr(trimmed, 80);
+  }
+  return "";
+}
+
+function truncateStr(s: string, n: number): string {
+  if (s.length <= n) return s;
+  return s.slice(0, n - 1) + "…";
 }
 
 /** Read a skill's content by name, scanning sources in priority order. */

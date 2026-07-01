@@ -1146,7 +1146,7 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
           const opts = [
             { label: paint.gray("(none — clear active skills)"), value: "__clear__" },
             ...entries.map((e) => ({
-              label: `${active.has(e.name) ? paint.green("●") : paint.gray("○")} ${e.name} ${paint.gray(`[${e.source}]`)}`,
+              label: `${active.has(e.name) ? paint.green("●") : paint.gray("○")} ${e.name} ${paint.gray(`[${e.source}]`)}${e.description ? paint.gray("  " + e.description) : ""}`,
               value: e.name,
             })),
           ];
@@ -1167,7 +1167,8 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
         writeLine(paint.gray("available skills:"));
         for (const e of entries) {
           const mark = active.has(e.name) ? paint.green("●") : paint.gray("○");
-          writeLine(`  ${mark} ${pad(e.name, 20)} ${paint.gray(`[${e.source}]`)}`);
+          const desc = e.description ? paint.gray(`  ${e.description}`) : "";
+          writeLine(`  ${mark} ${pad(e.name, 20)} ${paint.gray(`[${e.source}]`)}${desc}`);
         }
         writeLine(paint.gray("\n/skill <name> toggles · /skill clear deactivates all"));
         return "continue";
