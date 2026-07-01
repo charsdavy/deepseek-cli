@@ -209,6 +209,12 @@ export async function runAgentLoop(
       return { messages, iterations, finalText, usage: lastUsage };
     }
 
+    // Stop the "thinking…" spinner before any blocking user interaction
+    // (permission approval). Without this the spinner's setInterval keeps
+    // overwriting the readline prompt every 80ms, making it look like the
+    // program is still thinking when it's actually waiting for [y/n/a].
+    spinner.stop();
+
     // Collect permission decisions sequentially (keeps the y/n prompts sane),
     // then execute the approved calls in parallel. Denied/aborted/unknown tools
     // get their tool-message pushed immediately so their slots stay ordered.

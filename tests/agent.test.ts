@@ -268,8 +268,10 @@ describe("runAgentLoop", () => {
     // The streamed content was followed by a newline, THEN the ⏺ marker —
     // the marker never glues onto the trailing content line. (The ⏺ is now
     // rendered by the spinner's startTool, so it's preceded by \r + ANSI
-    // clear rather than a bare newline from printToolHeader.)
-    expect(out).toMatch(/Let me read the exact code sections I need to modify\.\n.*⏺/s);
+    // clear rather than a bare newline from printToolHeader. The spinner
+    // is also stopped before the permission loop, which may emit ANSI clear
+    // codes between the content and the separating newline.)
+    expect(out).toMatch(/Let me read the exact code sections I need to modify\..*?\n.*⏺/s);
   });
 
   it("surfaces a /fast hint after N consecutive read-only iterations on a reasoner", async () => {
