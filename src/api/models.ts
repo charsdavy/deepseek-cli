@@ -40,6 +40,11 @@ export const MODELS: ModelInfo[] = [
 
 export const DEFAULT_MODEL = "auto";
 
+/** Fixed model for sub-agents (spawned via task tool / spawnAgent).
+ *  Always the fast non-reasoning model — sub-agents are typically read-only
+ *  analysis tasks where flagship latency is pure overhead. */
+export const SUBAGENT_MODEL = "deepseek-v4-flash";
+
 export const MODEL_IDS = MODELS.map((m) => m.id);
 
 export function findModel(id: string): ModelInfo | undefined {

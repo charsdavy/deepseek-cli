@@ -5,7 +5,7 @@
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import type { ChatMessage } from "../api/client.ts";
-import { DEFAULT_MODEL, findModel, isReasoningModel, MODELS, resolveAutoModel } from "../api/models.ts";
+import { DEFAULT_MODEL, findModel, isReasoningModel, MODELS, resolveAutoModel, SUBAGENT_MODEL } from "../api/models.ts";
 import { estimateConversationTokens } from "../api/tokens.ts";
 import { ensureDirs, getOrSetupApiKey, loadConfig, saveConfig } from "../config/config.ts";
 import { loadProjectInstructions } from "../config/instructions.ts";
@@ -202,7 +202,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
       ];
       const r = await runAgentLoop(subMessages, {
         apiKey,
-        model: DEFAULT_MODEL,            // fast model, not the parent's flagship
+        model: SUBAGENT_MODEL,           // fixed fast model — sub-agents don't go through driveTurn's auto resolution
         reasoning: false,                // no chain-of-thought for sub-tasks
         reasoningEffort: undefined,
         maxContext: 60_000,              // bounded budget, not the parent's 1M
