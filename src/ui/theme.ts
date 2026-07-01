@@ -82,6 +82,7 @@ export const symbol = {
   lock: "🔒",
   brain: "🧠",
   trash: "🧹",
+  bolt: "⚡",
   rocket: "🚀",
   tip: "💡",
 };

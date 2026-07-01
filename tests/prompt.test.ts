@@ -9,16 +9,17 @@ import { ToolRegistry } from "../src/tools/registry.ts";
 const cwd = "/Users/test/project";
 
 describe("buildSystemPrompt", () => {
-  it("emits all six core blocks in stable order", () => {
+  it("emits all core blocks in stable order", () => {
     const { blocks } = buildSystemPrompt({ cwd });
-    expect(blocks.length).toBeGreaterThanOrEqual(6);
+    expect(blocks.length).toBeGreaterThanOrEqual(7);
     expect(blocks[0]).toContain("## Identity");
     expect(blocks[1]).toContain("## Environment");
     expect(blocks[1]).toContain(`/Users/test/project`);
     expect(blocks[2]).toContain("## Tools");
     expect(blocks[3]).toContain("## Proactive behavior");
-    expect(blocks[4]).toContain("## Safety");
-    expect(blocks[5]).toContain("## Output style");
+    expect(blocks[4]).toContain("## Iteration cost");
+    expect(blocks[5]).toContain("## Safety");
+    expect(blocks[6]).toContain("## Output style");
   });
 
   it("does NOT emit the reasoning addendum for chat models", () => {

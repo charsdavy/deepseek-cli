@@ -11,7 +11,7 @@ import type { PermissionManager } from "./permissions.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
 import type { ToolContext, ToolResult } from "../tools/types.ts";
 import { paint, symbol } from "../ui/theme.ts";
-import { blank, printError, printSystem, printToolHeader, streamWrite, writeLine } from "../ui/render.ts";
+import { blank, printError, printSystem, printTip, printToolHeader, streamWrite, writeLine } from "../ui/render.ts";
 import { spinner } from "../ui/spinner.ts";
 import { log } from "../log/logger.ts";
 
@@ -74,6 +74,14 @@ export async function runAgentLoop(
   const loopStart = performance.now();
   let apiTotalMs = 0;
   let toolsTotalMs = 0;
+  // Streak of consecutive iterations where every emitted tool was read-only
+  // (read_file / grep / glob / list_dir / git_* / web_fetch). When this hits
+  // the threshold while running under a reasoning model, surface a one-shot
+  // /fast hint — the user is mid-exploration and paying seconds of thinking
+  // per iteration for work that doesn't need chain-of-thought.
+  let readOnlyStreak = 0;
+  let explorationHintShown = false;
+  const EXPLORATION_HINT_THRESHOLD = 3;
   log.info("agent loop start", { model: opts.model, reasoning: shouldReason, reasonEffort: opts.reasoningEffort, messages: messagesIn.length, maxIterations });
 
   while (iterations < maxIterations) {
@@ -269,12 +277,38 @@ export async function runAgentLoop(
       }
     }
 
+    // Exploration-phase hint: count consecutive read-only-only iterations to
+    // nudge the user toward /fast when they're paying reasoning-overhead for
+    // tasks that don't need it.
+    if (pending.length > 0) {
+      const cats = pending
+        .map((p) => tools.get(p.name)?.category ?? "memory")
+        .filter((c): c is "fs-read" | "git" | "network" => c === "fs-read" || c === "git" || c === "network");
+      const allReadOnly = cats.length === pending.length;
+      if (allReadOnly) readOnlyStreak++;
+      else readOnlyStreak = 0;
+      if (
+        !explorationHintShown &&
+        shouldReason &&
+        readOnlyStreak >= EXPLORATION_HINT_THRESHOLD
+      ) {
+        explorationHintShown = true;
+        log.info("exploration hint shown", { iteration: iterations, streak: readOnlyStreak });
+        writeLine();
+        printTip(
+          `${readOnlyStreak} consecutive read-only iterations under a reasoning model — ` +
+          `run /fast to switch to deepseek-chat (much snappier exploration); /think to switch back when writing code.`,
+        );
+      }
+    }
+
     log.debug("iteration done", {
       iteration: iterations,
       iterMs: Math.round(performance.now() - iterStart),
       contentLen: acc.content.length,
       reasoningLen: acc.reasoning.length,
       toolCalls: acc.toolCalls.length,
+      readOnlyStreak,
     });
   }
 

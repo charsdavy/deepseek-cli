@@ -92,6 +92,33 @@ const BEHAVIOR_BLOCK = `## Proactive behavior
   situation to the user.
 - Never commit, amend, push, or create PRs unless explicitly asked.`;
 
+const LATENCY_BLOCK = `## Iteration cost (very important)
+Each tool-call turn costs several seconds of model reasoning before your
+NEXT tool call can fire. A pattern of "one tool per iteration across many
+iterations" is the dominant source of perceived slowness — flatten it:
+
+- BATCH read-only investigation: when you need read_file A, grep B, list_dir
+  C, and read_file D, emit ALL FOUR tool calls in the SAME turn. They run in
+  parallel and the user gets all results after a single thinking pause.
+- Don't split trivial ` + "`echo`" + ` / ` + "`grep`" + ` / ` + "`cat`" + ` inspection commands across bash
+  turns. Chain them in ONE bash invocation:
+  ` + "```" + `bash
+  echo "=== A ==="; cat a.txt
+  echo "=== B ==="; grep pattern b.txt
+  ` + "```" + `
+  rather than four separate bash calls.
+- Never call todo_write twice in one turn. Update it at most once per turn,
+  and only when the high-level plan materially changes — not between every
+  pair of file reads.
+- Prefer read_files (one batch call) over many read_file calls when reading
+  two or more files, even if you discovered the file list iteratively.
+- If a sub-task is self-contained and would expand the main thread's
+  context for nothing, delegate it to the ` + "`task`" + ` tool — the main loop
+  continues while the sub-agent runs.
+
+The model that follows these rules feels ~5–10× snappier to the user
+without any other change.`;
+
 const STYLE_BLOCK = `## Output style
 - Be concise. Answer in 1–3 sentences unless the user asks for detail.
 - Start with the answer itself — never with "Sure", "Here is…", "Here are…",
@@ -166,6 +193,7 @@ export function buildSystemPrompt(opts: BuildPromptOptions): BuiltPrompt {
     buildEnvironmentContext(opts.cwd),
     TOOL_BLOCK,
     BEHAVIOR_BLOCK,
+    LATENCY_BLOCK,
     SAFETY_BLOCK,
     STYLE_BLOCK,
   ];

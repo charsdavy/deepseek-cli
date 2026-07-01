@@ -78,6 +78,8 @@ deepseek config                                 # show merged config
 | `/exit`          | Quit the session                                         |
 | `/clear`         | Wipe conversation history (system prompt retained)      |
 | `/btw <question>`| Ask a throwaway side question; main session is untouched and nothing is saved |
+| `/fast`          | Switch to `deepseek-chat` + reasoning off — exploration phase latency drops |
+| `/think`         | Switch to `deepseek-reasoner` + reasoning high — writing-code phase |
 | `/model [name]`  | Setup wizard: model → effort → context (or `/model <id>` quick switch) |
 | `/reasoning [on|off\|effort high\|max]` | Show/set thinking default + intensity                          |
 | `/context [tokens]` | Show/set the context-trim budget                              |
@@ -268,6 +270,14 @@ What's logged (debug, `--verbose`): per-iteration totals (`iterMs`/content/reaso
 ### Performance report
 
 `scripts/perf-report.ts` aggregates a day's log into a quick perf summary — where time is going, which tools are slow, which API calls are slow, and retry/failure hotspots.
+
+### Latency: exploration phase vs writing-code phase
+
+The dominant source of perceived slowness is **per-iteration model reasoning time**, not the tools themselves. A reasoner-class model (`deepseek-reasoner` / `deepseek-v4-pro`) spends several seconds thinking before emitting each batch of tool calls; on long exploration flows (many `read_file`/`grep`/`list_dir` calls across iterations) those seconds stack into minutes. Three mitigations ship:
+
+1. **`/fast` ↔ `/think`** — one-keystroke model switching. Run `/fast` when you start exploring (jumps to `deepseek-chat` + reasoning off, ~5–10× snappier per iteration); run `/think` when you're ready to actually write code (back to `deepseek-reasoner` + reasoning high). The REPL startup tip reminds you this exists.
+2. **System-prompt guidance** — `## Iteration cost (very important)` tells the model to batch read-only tools in a single turn, avoid chaining `bash echo "==="` style inspection across iterations, and only update `todo_write` when the plan materially changes. This is the single largest lever on round-trip count.
+3. **Automatic exploration-phase hint** — when the agent loop detects ≥3 consecutive iterations where every emitted tool was read-only AND you're running under a reasoner, it prints a one-shot tip pointing at `/fast`. It fires at most once per turn so it never gets chatty; emits nothing if you're already on `deepseek-chat`.
 
 ```bash
 bun run scripts/perf-report.ts          # today's log, summary mode

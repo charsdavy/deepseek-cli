@@ -269,4 +269,108 @@ describe("runAgentLoop", () => {
     // the marker never glues onto the trailing content line.
     expect(out).toContain("Let me read the exact code sections I need to modify.\n⏺");
   });
+
+  it("surfaces a /fast hint after N consecutive read-only iterations on a reasoner", async () => {
+    // Three read-only iterations in a row under a reasoning model should emit
+    // the exploration-phase tip once. Read-only categories here: "memory" via
+    // echoTool is NOT read-only (echoTool category="memory"), so we need a
+    // real fs-read tool — use readFileTool which is category "fs-read".
+    const readerTool: Tool = {
+      name: "reader",
+      description: "reads a file",
+      category: "fs-read",
+      isDangerous: false,
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+      async execute() { return { ok: true, content: "x" }; },
+    };
+    const tools = registryWith(readerTool);
+    const perms = new PermissionManager({ mode: "auto" });
+
+    // Build N=3 SSE responses: each emits one reader tool call; the 4th ends the turn.
+    const mkTool = (id: string) => sseData({
+      choices: [{ delta: { tool_calls: [{ index: 0, id, function: { name: "reader", arguments: "{}" } }] } }],
+    });
+    const responses = [
+      sseResponse([mkTool("c1")]),
+      sseResponse([mkTool("c2")]),
+      sseResponse([mkTool("c3")]),
+      sseResponse([sseData({ choices: [{ delta: { content: "done" } }] }), "data: [DONE]\n\n"]),
+    ];
+
+    // Capture stdout so we can assert the hint fired.
+    const writes: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((s: unknown) => { writes.push(typeof s === "string" ? s : String(s)); return true; }) as typeof process.stdout.write;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetchSequence(responses);
+    try {
+      await runAgentLoop(
+        [{ role: "user", content: "explore" }],
+        {
+          apiKey: "sk-test",
+          model: "deepseek-reasoner",
+          reasoning: true,
+          tools,
+          permissions: perms,
+        },
+      );
+    } finally {
+      process.stdout.write = origWrite;
+      globalThis.fetch = origFetch;
+    }
+
+    const out = writes.join("");
+    // The one-shot exploration tip fired once and mentioned /fast.
+    const hits = (out.match(/consecutive read-only iterations/g) || []).length;
+    expect(hits).toBe(1);
+    expect(out).toContain("/fast");
+  });
+
+  it("does NOT surface the /fast hint when not running a reasoner", async () => {
+    // Same shape as above but with reasoning off — the hint must stay silent
+    // because deepseek-chat per-iteration latency is already small.
+    const readerTool: Tool = {
+      name: "reader",
+      description: "reads a file",
+      category: "fs-read",
+      isDangerous: false,
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+      async execute() { return { ok: true, content: "x" }; },
+    };
+    const tools = registryWith(readerTool);
+    const perms = new PermissionManager({ mode: "auto" });
+    const mkTool = (id: string) => sseData({
+      choices: [{ delta: { tool_calls: [{ index: 0, id, function: { name: "reader", arguments: "{}" } }] } }],
+    });
+    const responses = [
+      sseResponse([mkTool("c1")]),
+      sseResponse([mkTool("c2")]),
+      sseResponse([mkTool("c3")]),
+      sseResponse([sseData({ choices: [{ delta: { content: "done" } }] }), "data: [DONE]\n\n"]),
+    ];
+
+    const writes: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((s: unknown) => { writes.push(typeof s === "string" ? s : String(s)); return true; }) as typeof process.stdout.write;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetchSequence(responses);
+    try {
+      await runAgentLoop(
+        [{ role: "user", content: "explore" }],
+        {
+          apiKey: "sk-test",
+          model: "deepseek-chat",
+          reasoning: false,
+          tools,
+          permissions: perms,
+        },
+      );
+    } finally {
+      process.stdout.write = origWrite;
+      globalThis.fetch = origFetch;
+    }
+
+    const out = writes.join("");
+    expect(out).not.toContain("consecutive read-only iterations");
+  });
 });

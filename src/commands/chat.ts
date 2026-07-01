@@ -410,7 +410,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
 
   // ---- Interactive REPL ----
   printWelcome(model, reasoning, skipAll, baseUrl);
-  printTip("type /help for commands · double-tap Esc to abort a turn · /exit to quit");
+  printTip("type /help for commands · double-tap Esc to abort a turn · /exit to quit · /fast ↔ /think to switch model between exploration and writing code");
   blank();
 
   let firstPrompt = true;
@@ -876,6 +876,23 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
       await ctx.runSideTurn(q);
       return "continue";
     }
+    case "fast": {
+      // Exploration-phase shortcut: switch to the fastest non-thinking model
+      // and disable reasoning. read_file/grep/list_dir round-trips become
+      // seconds faster (no chain-of-thought before each tool call).
+      ctx.setModel("deepseek-chat");
+      await ctx.reasoning.set(false);
+      printSystem(`${symbol.bolt} fast mode — deepseek-chat, reasoning off (use /think to switch back)`, "green");
+      return "continue";
+    }
+    case "think": {
+      // Writing-code phase shortcut: switch to the reasoner + high effort.
+      ctx.setModel("deepseek-reasoner");
+      await ctx.reasoning.set(true);
+      await ctx.effort.set("high");
+      printSystem(`${symbol.brain} think mode — deepseek-reasoner, reasoning high (use /fast for exploration)`, "magenta");
+      return "continue";
+    }
     case "model": {
       const target = rest[0];
       if (!target) {
@@ -1182,7 +1199,7 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
 
 // Slash command names (incl. aliases) for Tab completion in the REPL.
 export const SLASH_COMMANDS = [
-  "help", "?", "exit", "quit", "q", "clear", "btw", "model", "reasoning", "thinking",
+  "help", "?", "exit", "quit", "q", "clear", "btw", "fast", "think", "model", "reasoning", "thinking",
   "context", "allow", "log", "new", "skill", "mcp", "tokens", "size", "tools",
   "system", "save", "undo", "retry", "export", "sessions", "history",
 ];
@@ -1216,6 +1233,8 @@ function printSlashHelp(): void {
     ["/exit", "exit the session"],
     ["/clear", "wipe conversation history (keep system prompt)"],
     ["/btw <question>", "ask a side question without disturbing the main session"],
+    ["/fast", "switch to deepseek-chat + reasoning off (exploration phase) "],
+    ["/think", "switch to deepseek-reasoner + reasoning high (writing-code phase)"],
     ["/model [name]", "arrow-key model picker, or switch to a specific id"],
     ["/reasoning [on|off|effort high|max]", "show/set thinking default + intensity"],
     ["/context [tokens]", "show/set the context-trim budget"],
