@@ -20,7 +20,7 @@ const noopMcp = {
   toolsForServer: () => [] as Tool[],
   add: async () => ({ ok: false, toolCount: 0 }),
 };
-const noopPerms = { dangerousTools: () => ["bash"], isAllowed: () => false, allow: () => {}, clear: () => {} };
+const noopPerms = { dangerousTools: () => ["bash"], isAllowed: () => false, allow: () => {}, clear: () => {}, approvalMode: () => "auto" as const, setApprovalMode: async () => {} };
 
 describe("/model slash command", () => {
   let session: ReturnType<typeof newSession>;

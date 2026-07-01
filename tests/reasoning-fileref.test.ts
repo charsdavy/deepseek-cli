@@ -8,7 +8,7 @@ import { ToolRegistry } from "../src/tools/registry.ts";
 
 const noopSkills = { list: async () => [], active: () => [], toggle: async () => false, clear: () => {} };
 const noopMcp = { servers: () => [], toggle: () => false, toolsForServer: () => [] as Tool[], add: async () => ({ ok: false, toolCount: 0 }) };
-const noopPerms = { dangerousTools: () => ["bash"], isAllowed: () => false, allow: () => {}, clear: () => {} };
+const noopPerms = { dangerousTools: () => ["bash"], isAllowed: () => false, allow: () => {}, clear: () => {}, approvalMode: () => "auto" as const, setApprovalMode: async () => {} };
 
 let reasoningState: boolean;
 let savedToCfg: boolean | null;

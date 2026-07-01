@@ -32,7 +32,7 @@ function makeCtx(): { ctx: SlashCtx; setCalls: string[] } {
     effort: { get: () => "high", set: async () => {} },
     context: { get: () => 60000, set: async () => {} },
     promptLog: { get: () => true, set: async (on: boolean) => { setCalls.push(`promptlog:${on}`); } },
-    permissions: { dangerousTools: () => [], isAllowed: () => false, allow: () => {}, clear: () => {} },
+    permissions: { dangerousTools: () => [], isAllowed: () => false, allow: () => {}, clear: () => {}, approvalMode: () => "auto", setApprovalMode: async () => {} },
     prefillHolder: { value: "" },
     runSideTurn: async () => {},
   };

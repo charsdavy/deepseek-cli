@@ -41,7 +41,7 @@ export interface CliConfig {
 
 export const DEFAULT_CONFIG: CliConfig = {
   defaultModel: "deepseek-chat",
-  approvalMode: "ask",
+  approvalMode: "auto",
   temperature: 0.7,
   promptLog: true,
 };

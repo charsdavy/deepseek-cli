@@ -353,12 +353,18 @@ export async function runChat(args: ChatArgs): Promise<void> {
     },
   };
 
-  // Permission API for the /allow one-key authorization command.
+  // Permission API for the /allow and /approve commands.
   const permsApi: PermsApi = {
     dangerousTools: () => tools.list().filter((t) => t.isDangerous).map((t) => t.name),
     isAllowed: (name: string) => permissions.isToolAllowed(name),
     allow: (name: string) => permissions.allowTool(name),
     clear: () => permissions.clearToolAllows(),
+    approvalMode: () => permissions.mode,
+    setApprovalMode: async (mode: "ask" | "auto") => {
+      permissions.setMode(mode);
+      cfg.approvalMode = mode;
+      await saveConfig(cfg);
+    },
   };
 
   const toolCtx: ToolContext = { cwd };
@@ -633,7 +639,7 @@ async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
       spawnAgent: deps.spawnAgent,
       onContentDelta: (d) => renderer.onContentDelta(d),
       onReasoningDelta: (d) => renderer.onReasoningDelta(d),
-      onToolStart: () => true,
+      onToolStart: () => { renderer.flush(); return true; },
       onToolEnd,
     });
   } catch (e) {
@@ -891,12 +897,15 @@ export interface SlashCtx {
   runSideTurn: (prompt: string) => Promise<void>;
 }
 
-/** Permission API handed to the /allow slash command. */
+/** Permission API handed to the /allow and /approve slash commands. */
 interface PermsApi {
   dangerousTools: () => string[];
   isAllowed: (name: string) => boolean;
   allow: (name: string) => void;
   clear: () => void;
+  /** Current approval mode ("auto" = no prompts, "ask" = prompt each time). */
+  approvalMode: () => "ask" | "auto" | "yolo" | "deny-pure-shell";
+  setApprovalMode: (mode: "ask" | "auto") => Promise<void>;
 }
 
 /** Skills API handed to the slash handler (built in runChat). */
@@ -1244,6 +1253,28 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
       printSystem(`'${arg}' authorized for this session — no more prompts`, "green");
       return "continue";
     }
+    case "approve": {
+      const arg = rest[0]?.toLowerCase();
+      if (!arg) {
+        const mode = ctx.permissions.approvalMode();
+        const state = mode === "auto" ? paint.green("auto (no prompts)") : paint.yellow("ask (prompt each time)");
+        printSystem(`approval mode: ${state}`, mode === "auto" ? "green" : "yellow");
+        writeLine(paint.gray("  /approve auto — no prompts · /approve ask — prompt each time"));
+        return "continue";
+      }
+      if (arg === "auto" || arg === "on" || arg === "yes") {
+        await ctx.permissions.setApprovalMode("auto");
+        printSystem("approval mode: auto — bash commands run without prompting (saved as default)", "green");
+        return "continue";
+      }
+      if (arg === "ask" || arg === "off" || arg === "no") {
+        await ctx.permissions.setApprovalMode("ask");
+        printSystem("approval mode: ask — each bash command prompts for approval (saved as default)", "yellow");
+        return "continue";
+      }
+      printError("usage: /approve [auto|ask]  (auto = no prompts, ask = prompt each time)");
+      return "continue";
+    }
     case "log":
       printSystem(`log file: ${log.filePath}`, "blue");
       return "continue";
@@ -1433,6 +1464,7 @@ function printSlashHelp(): void {
     ["/reasoning [on|off|effort high|max]", "show/set thinking default + intensity"],
     ["/context [tokens]", "show/set the context-trim budget"],
     ["/allow [tool|all|reset]", "one-key authorize a tool (e.g. bash) for the session"],
+    ["/approve [auto|ask]", "bash approval mode (auto = no prompts, ask = prompt each time)"],
     ["/log", "show the log file path"],
     ["/promptlog [on|off|recent|search|clear]", "per-turn prompt logging for optimization"],
     ["/new", "start a fresh session, clearing context"],

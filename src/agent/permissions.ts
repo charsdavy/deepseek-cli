@@ -35,6 +35,12 @@ export class PermissionManager {
     return this.opts.mode;
   }
 
+  /** Change the approval mode at runtime (via /approve slash command). */
+  setMode(mode: ApprovalMode): void {
+    this.opts.mode = mode;
+    this.opts.skipAll = mode === "auto" || mode === "yolo";
+  }
+
   async check(tool: Tool, args: Record<string, unknown>): Promise<PermissionDecision> {
     if (this.opts.skipAll || this.opts.mode === "auto") {
       return { allow: true };
@@ -83,7 +89,7 @@ export class PermissionManager {
     );
     writeLine();
     const ans = await askQuestion(
-      `${paint.bold("Approve?")} ${paint.gray("[y]es / [n]o / [a]lways for this session")} `,
+      `${paint.bold("Approve?")} ${paint.gray("[y]es / [n]o / [a]lways for this session")}\n`,
     ).catch(() => "n");
 
     const lower = ans.toLowerCase().trim();

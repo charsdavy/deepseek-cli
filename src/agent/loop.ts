@@ -258,7 +258,12 @@ export async function runAgentLoop(
       // newline (e.g. "Let me read the file." then tool_calls in the same turn).
       // Each ⏺ tool marker MUST start at column 0 — flush a newline if needed
       // so the marker never glues onto a trailing content line.
-      const streamed = acc.content || acc.reasoning;
+      // Only count reasoning if it was actually displayed: when opts.reasoning
+      // is not explicitly true, the renderer suppresses the reasoning trace but
+      // acc.reasoning still accumulates — using it here would insert a spurious
+      // blank line before the tool marker.
+      const reasoningDisplayed = opts.reasoning === true;
+      const streamed = acc.content || (reasoningDisplayed ? acc.reasoning : "");
       if (streamed.length > 0 && !streamed.endsWith("\n")) writeLine();
 
       // Show a blinking ⏺ marker while tools execute. For a single tool, the
@@ -450,6 +455,16 @@ export function makeStreamRenderer(opts: StreamRenderOptions) {
         started = true;
       }
       process.stdout.write(paint.dim(delta));
+    },
+    /** Flush any pending partial line to stdout. Called by the agent loop
+     *  before showing a tool marker so unflushed content from the model's
+     *  last delta (which may not end with \n) is displayed instead of
+     *  getting concatenated with the next iteration's content. */
+    flush() {
+      if (lineBuf) {
+        streamWrite(md.flush(lineBuf) + "\n");
+        lineBuf = "";
+      }
     },
     end() {
       // If reasoning was the last output and didn't end with a newline,

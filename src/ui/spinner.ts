@@ -11,6 +11,12 @@ import { C, outputSilent, paint, symbol } from "./theme.ts";
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const DOT_BLINK_FRAMES = [paint.bright.cyan("⏺"), paint.gray("⏺")];
 
+// \x1b[?25l hides the terminal cursor; \x1b[?25h shows it. Hiding during
+// the spinner avoids the blinking caret sitting mid-line after the frame
+// text, which looks like the cursor is "stuck" off col 0.
+const HIDE_CURSOR = "\x1b[?25l";
+const SHOW_CURSOR = "\x1b[?25h";
+
 interface ActiveSpinner {
   id: number;
   text: string;
@@ -46,6 +52,7 @@ export const spinner = {
     if (outputSilent) return;
     if (active) this.stop();
     active = { id: 0, text, frame: 0, startMs: performance.now(), frames: SPINNER_FRAMES, keepOnStop: false };
+    process.stdout.write(HIDE_CURSOR);
     render();
     active.id = setInterval(render, 80) as unknown as number;
   },
@@ -56,6 +63,7 @@ export const spinner = {
     if (outputSilent) return;
     if (active) this.stop();
     active = { id: 0, text, frame: 0, startMs: performance.now(), frames: DOT_BLINK_FRAMES, keepOnStop: true };
+    process.stdout.write(HIDE_CURSOR);
     render();
     // Blink at ~2Hz (every 270ms) — slower than the braille spinner since a
     // 10-frame rotation at 80ms would be too fast for a simple on/off dot.
@@ -90,6 +98,7 @@ export const spinner = {
         // Clear the spinner line.
         process.stdout.write(`\r${C.reset}\x1b[K`);
       }
+      process.stdout.write(SHOW_CURSOR);
     }
     active = null;
     if (finalText !== undefined && !outputSilent) {

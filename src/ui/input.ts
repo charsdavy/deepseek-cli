@@ -18,6 +18,9 @@ function getRl(): readline.Interface {
 
 export async function askQuestion(prompt: string): Promise<string> {
   const r = getRl();
+  // Ensure the cursor is visible — the spinner may have hidden it with
+  // \x1b[?25l, and readline doesn't restore it on its own.
+  process.stdout.write("\x1b[?25h");
   return (await r.question(prompt)).trim();
 }
 

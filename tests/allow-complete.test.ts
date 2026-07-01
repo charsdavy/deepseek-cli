@@ -92,6 +92,8 @@ describe("/allow slash command", () => {
         isAllowed: (n: string) => allowed.includes(n),
         allow: (n: string) => { allowed.push(n); },
         clear: () => { cleared = true; allowed = []; },
+        approvalMode: () => "ask" as const,
+        setApprovalMode: async () => {},
       },
       prefillHolder: { value: "" },
       runSideTurn: async () => {},
