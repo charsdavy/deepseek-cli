@@ -442,6 +442,7 @@ Releases are automated through GitHub Actions (`.github/workflows/release.yml`):
   ```bash
   brew tap charsdavy/tap
   brew install deepseek
+  brew update
   brew upgrade deepseek    # to pull future updates
   ```
 
