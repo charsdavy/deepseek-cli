@@ -86,6 +86,11 @@ const BEHAVIOR_BLOCK = `## Proactive behavior
 - For READ-ONLY tasks (read code, explain, propose a solution, answer a
   question) do NOT call todo_write — just read the relevant files and answer.
   Spawning a todo list for a pure "read and explain" task wastes an iteration.
+- When asked to IMPLEMENT, FIX, or BUILD: pick up edit_file / write_file
+  IMMEDIATELY. Do NOT re-explain the plan, re-summarize the approach, or
+  narrate "I will now…" before editing. Analysis is done — implementation
+  means writing code, not talking about writing code. A turn that ends with
+  text but zero file edits is a failure mode when the user asked for changes.
 - When you need 2+ files to answer, call read_files ONCE (batch) instead of
   several read_file calls across turns. This is the highest-leverage speed win.
 - After editing code, run the project's lint + typecheck + tests before

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
-import { completeSlash, handleSlashCommand, SLASH_COMMANDS } from "../src/commands/chat.ts";
+import { completeSlash, handleSlashCommand, SLASH_COMMANDS, extractReadFilePaths } from "../src/commands/chat.ts";
 import { newSession } from "../src/session/store.ts";
 import { setOutputSilent } from "../src/ui/render.ts";
 import { appendPromptLog, buildEntry } from "../src/session/promptLog.ts";
@@ -132,5 +132,74 @@ describe("CLI --no-prompt-log flag", () => {
   it("defaults to undefined (unset → enabled)", () => {
     const args = parseArgs(["node", "deepseek", "hi"]);
     expect(args.noPromptLog).toBeUndefined();
+  });
+});
+
+describe("extractReadFilePaths (sub-agent file reuse)", () => {
+  it("extracts filePath from read_file tool calls", () => {
+    const msgs = [
+      {
+        role: "assistant" as const,
+        content: "",
+        tool_calls: [
+          {
+            id: "1",
+            type: "function" as const,
+            function: { name: "read_file", arguments: JSON.stringify({ filePath: "/a/b.ts" }) },
+          },
+        ],
+      },
+    ];
+    expect(extractReadFilePaths(msgs as never)).toEqual(["/a/b.ts"]);
+  });
+
+  it("extracts filePaths array from read_files tool calls", () => {
+    const msgs = [
+      {
+        role: "assistant" as const,
+        content: "",
+        tool_calls: [
+          {
+            id: "1",
+            type: "function" as const,
+            function: { name: "read_files", arguments: JSON.stringify({ filePaths: ["/x.ts", "/y.ts"] }) },
+          },
+        ],
+      },
+    ];
+    expect(extractReadFilePaths(msgs as never)).toEqual(["/x.ts", "/y.ts"]);
+  });
+
+  it("deduplicates paths across multiple tool calls", () => {
+    const msgs = [
+      {
+        role: "assistant" as const,
+        content: "",
+        tool_calls: [
+          { id: "1", type: "function" as const, function: { name: "read_file", arguments: JSON.stringify({ filePath: "/dup.ts" }) } },
+          { id: "2", type: "function" as const, function: { name: "read_file", arguments: JSON.stringify({ filePath: "/dup.ts" }) } },
+          { id: "3", type: "function" as const, function: { name: "read_files", arguments: JSON.stringify({ filePaths: ["/new.ts"] }) } },
+        ],
+      },
+    ];
+    expect(extractReadFilePaths(msgs as never)).toEqual(["/dup.ts", "/new.ts"]);
+  });
+
+  it("ignores non-read tool calls", () => {
+    const msgs = [
+      {
+        role: "assistant" as const,
+        content: "",
+        tool_calls: [
+          { id: "1", type: "function" as const, function: { name: "bash", arguments: JSON.stringify({ command: "ls" }) } },
+          { id: "2", type: "function" as const, function: { name: "edit_file", arguments: JSON.stringify({ filePath: "/x.ts" }) } },
+        ],
+      },
+    ];
+    expect(extractReadFilePaths(msgs as never)).toEqual([]);
+  });
+
+  it("returns empty for messages with no tool calls", () => {
+    expect(extractReadFilePaths([{ role: "user", content: "hi" } as never])).toEqual([]);
   });
 });

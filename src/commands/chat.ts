@@ -173,6 +173,15 @@ export async function runChat(args: ChatArgs): Promise<void> {
   // Sub-agent spawner surfaced to the `task` tool. Runs a nested agent loop
   // silently with its own (small) context + iteration budget; multiple `task`
   // calls in one turn run in parallel via the parent loop's Promise.all.
+  //
+  // Sub-agents always run on the fast model (deepseek-v4-flash) with reasoning
+  // OFF and a 60k context budget — they're typically read-only analysis tasks,
+  // so inheriting the parent's flagship model + 1M context + max reasoning is
+  // pure overhead that can turn a 5s subtask into a 120s one.
+  //
+  // After the sub-agent finishes, the file paths it read are extracted from
+  // its tool-call history and appended to the returned text so the main
+  // session knows which files are already explored (avoids re-reading them).
   let subagentDepth = 0;
   const spawnAgent = async (
     prompt: string,
@@ -193,10 +202,10 @@ export async function runChat(args: ChatArgs): Promise<void> {
       ];
       const r = await runAgentLoop(subMessages, {
         apiKey,
-        model,
-        reasoning,
-        reasoningEffort,
-        maxContext,
+        model: DEFAULT_MODEL,            // fast model, not the parent's flagship
+        reasoning: false,                // no chain-of-thought for sub-tasks
+        reasoningEffort: undefined,
+        maxContext: 60_000,              // bounded budget, not the parent's 1M
         temperature,
         maxTokens,
         maxIterations: 10,
@@ -206,6 +215,12 @@ export async function runChat(args: ChatArgs): Promise<void> {
         cwd: opts?.cwd ?? cwd,
         spawnAgent, // allow further nesting up to the depth cap
       });
+      // Collect file paths the sub-agent read, so the main session can reuse
+      // them instead of re-reading the same files in a follow-up turn.
+      const filesAccessed = extractReadFilePaths(r.messages);
+      if (filesAccessed.length > 0) {
+        return `${r.finalText}\n\n<files_accessed>\n${filesAccessed.join("\n")}\n</files_accessed>`;
+      }
       return r.finalText;
     } finally {
       setOutputSilent(wasSilent);
@@ -710,6 +725,45 @@ function countUserMessages(messages: ChatMessage[]): number {
     if (m.role === "user") n++;
   }
   return n;
+}
+
+/**
+ * Extract unique file paths from read_file / read_files tool calls in a
+ * sub-agent's message history. Lets the main session know which files were
+ * already explored so it doesn't wastefully re-read them in a follow-up turn.
+ */
+export function extractReadFilePaths(messages: ChatMessage[]): string[] {
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const m of messages) {
+    if (m.role !== "assistant" || !m.tool_calls) continue;
+    for (const tc of m.tool_calls) {
+      const fn = tc.function;
+      if (!fn) continue;
+      if (fn.name !== "read_file" && fn.name !== "read_files") continue;
+      try {
+        const args = JSON.parse(fn.arguments || "{}") as Record<string, unknown>;
+      // read_file: single filePath; read_files: filePaths array
+      const fp = args.filePath;
+      const fps = args.filePaths;
+      if (typeof fp === "string" && !seen.has(fp)) {
+        seen.add(fp);
+        paths.push(fp);
+      }
+      if (Array.isArray(fps)) {
+        for (const p of fps) {
+          if (typeof p === "string" && !seen.has(p)) {
+            seen.add(p);
+            paths.push(p);
+          }
+        }
+      }
+      } catch {
+        /* skip malformed tool call args */
+      }
+    }
+  }
+  return paths;
 }
 
 function accumulateUsage(
