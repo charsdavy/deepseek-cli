@@ -26,7 +26,7 @@ import { VERSION } from "../cli.ts";
 import { paint, symbol } from "../ui/theme.ts";
 import { blank, printBordered, printError, printSeparator, printSystem, printTip, setOutputSilent, writeLine } from "../ui/render.ts";
 import { outputSilent } from "../ui/theme.ts";
-import { askMultiline, closeReadline, restoreTerminal, selectOption, watchDoubleEsc } from "../ui/input.ts";
+import { askMultiline, closeReadline, restoreTerminal, selectOption, watchTurnInput } from "../ui/input.ts";
 import { spinner } from "../ui/spinner.ts";
 
 export interface ChatArgs {
@@ -371,8 +371,14 @@ export async function runChat(args: ChatArgs): Promise<void> {
 
   // Per-turn abort holder. SIGINT aborts the active turn; a second SIGINT with
   // no active turn force-quits the process. A double-tap of Escape also aborts
-  // the active turn (see watchDoubleEsc) — convenient when the user's hands
+  // the active turn (see watchTurnInput) — convenient when the user's hands
   // are on the home row and they want to bail back to the prompt.
+  //
+  // Input queue: while the AI is working, the user can type and press Enter
+  // to queue follow-up prompts. When the turn ends, queued prompts are
+  // auto-submitted one by one. Each queued prompt is displayed with a
+  // [Queued] marker so the user knows it was typed mid-turn.
+  const inputQueue: string[] = [];
   const turnAbort: { current: AbortController | null } = { current: null };
   let exitFlagged = false;
   const onSigInt = () => {
@@ -391,17 +397,32 @@ export async function runChat(args: ChatArgs): Promise<void> {
   process.on("SIGINT", onSigInt);
 
   // Begin a turn: create the AbortController, register it as the active
-  // cancellable turn (so SIGINT can abort it), and arm the double-Esc watcher.
+  // cancellable turn (so SIGINT can abort it), and arm the input watcher
+  // that captures both double-Esc (abort) and regular typing (queue).
   // Returns the controller + a stop() that unarms everything and clears the
   // active slot. Call stop() in the turn's finally.
   const beginTurn = (): { controller: AbortController; stop: () => void } => {
     const controller = new AbortController();
     turnAbort.current = controller;
-    const stopEsc = watchDoubleEsc(() => controller.abort());
+    const stopInput = watchTurnInput(
+      () => controller.abort(),
+      (text) => inputQueue.push(text),
+      (buf, queuedCount) => {
+        // Update the spinner to show what the user is typing + queued count.
+        // The spinner is restarted each iteration, so we only update if it's
+        // active (during the thinking/tool phase).
+        const queuedTag = queuedCount > 0 ? paint.gray(` (${queuedCount} queued)`) : "";
+        if (buf) {
+          spinner.update(`thinking…${queuedTag} ${paint.dim("› " + buf)}`);
+        } else if (queuedCount > 0) {
+          spinner.update(`thinking…${queuedTag}`);
+        }
+      },
+    );
     return {
       controller,
       stop: () => {
-        stopEsc();
+        stopInput();
         turnAbort.current = null;
       },
     };
@@ -445,7 +466,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
 
   // ---- Interactive REPL ----
   printWelcome(model, reasoning, skipAll, baseUrl);
-  printTip("type /help for commands · double-tap Esc to abort a turn · /exit to quit · /fast ↔ /think to switch model between exploration and writing code");
+  printTip("type /help for commands · type during AI turns to queue prompts · double-tap Esc to abort · /exit to quit · /fast ↔ /think to switch model");
   blank();
 
   let firstPrompt = true;
@@ -458,19 +479,29 @@ export async function runChat(args: ChatArgs): Promise<void> {
   try {
     while (true) {
       let input: string;
-      try {
-        // A subtle rule between turns gives the REPL a Claude-Code-like rhythm.
+      // Check for queued input first (typed during the previous AI turn).
+      // Queued prompts are auto-submitted with a [Queued] marker so the user
+      // knows which prompts were typed mid-turn and are still pending.
+      if (inputQueue.length > 0) {
+        input = inputQueue.shift()!;
         if (!firstPrompt) printSeparator();
         firstPrompt = false;
-        input = await askMultiline(
-          `${paint.bold(paint.bright.cyan(`${symbol.user}`))} ${paint.gray("›")} `,
-          history,
-          completeSlash, // live slash-command suggestions + Tab completion
-          prefill || undefined,
-        );
-        prefill = "";
-      } catch {
-        break;
+        writeLine(`${paint.bold(paint.bright.cyan(`${symbol.user}`))} ${paint.gray("›")} ${paint.yellow("[Queued]")} ${input}`);
+      } else {
+        try {
+          // A subtle rule between turns gives the REPL a Claude-Code-like rhythm.
+          if (!firstPrompt) printSeparator();
+          firstPrompt = false;
+          input = await askMultiline(
+            `${paint.bold(paint.bright.cyan(`${symbol.user}`))} ${paint.gray("›")} `,
+            history,
+            completeSlash, // live slash-command suggestions + Tab completion
+            prefill || undefined,
+          );
+          prefill = "";
+        } catch {
+          break;
+        }
       }
       exitFlagged = false;
       const trimmed = input.trim();

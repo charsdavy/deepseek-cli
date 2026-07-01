@@ -379,6 +379,109 @@ export function watchDoubleEsc(onAbort: () => void): () => void {
   return cleanup;
 }
 
+/**
+ * Turn-input watcher: a superset of watchDoubleEsc that also captures
+ * printable keystrokes so the user can type and queue prompts while the
+ * AI is working. Typed text is shown live via the `onType` callback (the
+ * caller typically updates the spinner text). When Enter is pressed the
+ * line is queued via `onQueued` and the buffer is cleared.
+ *
+ * Returns a cleanup function that detaches the listener and restores the
+ * prior raw mode. No-ops when stdin/stdout isn't a TTY.
+ */
+export function watchTurnInput(
+  onAbort: () => void,
+  onQueued: (text: string) => void,
+  onType: (buffer: string, queuedCount: number) => void,
+): () => void {
+  const tty = input as NodeJS.ReadStream & { isTTY?: boolean; isRaw?: boolean; setRawMode?: (m: boolean) => void };
+  if (tty.isTTY !== true || output.isTTY !== true) {
+    return () => {};
+  }
+  const savedRaw = tty.isRaw ?? false;
+  try {
+    tty.setRawMode?.(true);
+  } catch {
+    return () => {};
+  }
+  tty.resume();
+
+  let lastEsc = 0;
+  let armed = true;
+  let buf = "";
+  let queued = 0;
+
+  const onData = (data: Buffer): void => {
+    if (!armed) return;
+    const b0 = data[0];
+
+    // --- Escape handling (double-Esc abort) ---
+    if (b0 === 0x1b) {
+      // CSI sequence (arrows etc): not a real Esc
+      if (data.length >= 2 && data[1] === 0x5b) return;
+      const now = Date.now();
+      if (lastEsc > 0 && now - lastEsc < DOUBLE_ESC_WINDOW_MS) {
+        lastEsc = 0;
+        armed = false;
+        cleanup();
+        onAbort();
+        return;
+      }
+      lastEsc = now;
+      output.write("\n" + paint.yellow("  (Esc again to cancel)") + "\n");
+      return;
+    }
+
+    // --- Regular input ---
+    // Enter — queue the line
+    if (b0 === 0x0d || b0 === 0x0a) {
+      if (buf.trim()) {
+        queued++;
+        onQueued(buf);
+      }
+      buf = "";
+      onType(buf, queued);
+      return;
+    }
+
+    // Backspace / Delete
+    if (b0 === 0x7f || b0 === 0x08) {
+      if (buf.length > 0) {
+        buf = buf.slice(0, -1);
+        onType(buf, queued);
+      }
+      return;
+    }
+
+    // Ctrl-C — abort like a double-Esc
+    if (b0 === 0x03) {
+      armed = false;
+      cleanup();
+      onAbort();
+      return;
+    }
+
+    // Other control chars: ignore
+    if (b0 < 0x20) return;
+
+    // Printable (UTF-8 ok): append to buffer
+    buf += data.toString("utf-8");
+    onType(buf, queued);
+  };
+
+  const cleanup = (): void => {
+    tty.off("data", onData);
+    try {
+      tty.setRawMode?.(savedRaw);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  tty.on("data", onData);
+  return cleanup;
+}
+
 export function closeReadline(): void {
   rl?.close();
   rl = null;
