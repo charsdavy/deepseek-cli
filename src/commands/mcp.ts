@@ -106,9 +106,11 @@ export function parseAddArgs(args: string[]): ParsedMcpAdd | null {
   return { name, command, args: positional.slice(2), env, project, isDangerous: isDangerous || undefined };
 }
 
-/** Write a server entry into the (global or project) mcp.json. */
-export async function addServerToConfig(parsed: ParsedMcpAdd): Promise<string> {
-  const file = parsed.project ? projectMcpFile() : globalMcpFile();
+/** Write a server entry into the (global or project) mcp.json.
+ *  Pass `cwd` to use the session's working directory for project-scoped
+ *  writes; falls back to process.cwd() for CLI usage. */
+export async function addServerToConfig(parsed: ParsedMcpAdd, cwd?: string): Promise<string> {
+  const file = parsed.project ? path.join(cwd ?? process.cwd(), ".mcp.json") : globalMcpFile();
   const data = await readMcpFile(file);
   data.mcpServers[parsed.name] = {
     command: parsed.command,

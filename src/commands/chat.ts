@@ -332,17 +332,18 @@ export async function runChat(args: ChatArgs): Promise<void> {
 
   // Surface server enable/disable + per-server tools to the /mcp command.
   const mcpApi: McpApi = {
-    servers: () => mcp.status().map((s) => ({ name: s.name, enabled: s.enabled, toolCount: s.toolCount, dangerous: s.dangerous === true })),
+    servers: () => mcp.status().map((s) => ({ name: s.name, enabled: s.enabled, toolCount: s.toolCount, dangerous: s.dangerous === true, scope: s.scope })),
     toggle: (name: string) => mcp.toggleServer(name),
     toolsForServer: (name: string) => mcp.toolsForServer(name),
     add: async (parsed) => {
       try {
-        await addServerToConfig(parsed); // persist to mcp.json
+        await addServerToConfig(parsed, cwd); // persist to mcp.json (session cwd)
         const cfg: McpServerConfig = {
           command: parsed.command,
           args: parsed.args.length ? parsed.args : undefined,
           env: Object.keys(parsed.env).length ? parsed.env : undefined,
           isDangerous: parsed.isDangerous ? true : undefined,
+          _scope: parsed.project ? "project" : "global",
         };
         const res = await mcp.addServer(parsed.name, cfg); // live connect
         if (res.ok) for (const t of mcp.toolsForServer(parsed.name)) tools.register(t);
@@ -960,7 +961,7 @@ interface SkillsApi {
 
 /** MCP API handed to the /mcp slash handler. */
 interface McpApi {
-  servers: () => { name: string; enabled: boolean; toolCount: number; dangerous: boolean }[];
+  servers: () => { name: string; enabled: boolean; toolCount: number; dangerous: boolean; scope?: "global" | "project" }[];
   toggle: (name: string) => boolean;
   toolsForServer: (name: string) => Tool[];
   /** Add a server live: write config + spawn/connect + register tools.
@@ -1197,7 +1198,8 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
         }
         const res = await ctx.mcp.add(parsed);
         if (res.ok) {
-          printSystem(`mcp '${parsed.name}' connected — ${res.toolCount} tool${res.toolCount === 1 ? "" : "s"} (saved to mcp.json)`, "green");
+          const scope = parsed.project ? "project (./.mcp.json)" : "global (~/.deepseek-cli/mcp.json)";
+          printSystem(`mcp '${parsed.name}' connected — ${res.toolCount} tool${res.toolCount === 1 ? "" : "s"} (saved: ${scope})`, "green");
         } else {
           printError(`mcp '${parsed.name}' failed to connect: ${res.error ?? "unknown"} (config still saved; will retry next session)`);
         }
@@ -1214,9 +1216,10 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
         for (const s of list) {
           const mark = s.enabled ? paint.green("●") : paint.gray("○");
           const warn = s.dangerous ? paint.bright.yellow("⚠ ") : "";
-          writeLine(`  ${mark} ${warn}${pad(s.name, 20)} ${paint.gray(s.toolCount + " tool" + (s.toolCount === 1 ? "" : "s"))}`);
+          const scope = s.scope ? paint.gray(`[${s.scope}]`) : "";
+          writeLine(`  ${mark} ${warn}${pad(s.name, 20)} ${scope} ${paint.gray(s.toolCount + " tool" + (s.toolCount === 1 ? "" : "s"))}`);
         }
-        writeLine(paint.gray("\n/mcp <name> toggles · /mcp add … adds · /mcp clear-ish via config"));
+        writeLine(paint.gray("\n/mcp <name> toggles · /mcp add … adds (--project for project scope)"));
         return "continue";
       }
       const target = list.find((s) => s.name === arg);

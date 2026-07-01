@@ -25,6 +25,9 @@ export interface McpServerConfig {
   /** When true, this server's tools are marked dangerous → each call prompts
    *  for y/n approval (unless /allow'd or --yolo). Default false. */
   isDangerous?: boolean;
+  /** Internal: set by loadMcpConfig to track whether this server came from
+   *  the global mcp.json or the project's .mcp.json. Not serialized to disk. */
+  _scope?: "global" | "project";
 }
 
 export interface McpConfig {

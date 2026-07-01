@@ -50,6 +50,15 @@ bun run build           # → ./dist/deepseek
 
 Copy the `./dist/deepseek` binary somewhere on your `PATH`.
 
+## Upgrade
+
+### Homebrew
+
+```bash
+brew update
+brew upgrade deepseek    # to pull future updates
+```
+
 ## Quick start
 
 ```bash

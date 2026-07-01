@@ -21,30 +21,35 @@ export interface LoadedServer {
   enabled: boolean;
   /** True if this server's tools require per-call approval. */
   dangerous?: boolean;
+  /** Whether this server was configured globally or in the project's .mcp.json. */
+  scope?: "global" | "project";
   error?: string;
 }
 
-/** Merge global + project mcp.json into a single server map (project wins). */
+/** Merge global + project mcp.json into a single server map (project wins).
+ *  Each server is tagged with its scope so the /mcp listing can show origin. */
 export async function loadMcpConfig(cwd: string): Promise<McpConfig> {
-  const files: string[] = [];
+  const files: { path: string; scope: "global" | "project" }[] = [];
   const override = process.env.DEEPSEEK_MCP_FILE;
   if (override) {
-    files.push(override);
+    files.push({ path: override, scope: "global" });
   } else {
     // Global dir honors DEEPSEEK_MCP_GLOBAL so tests can relocate it.
     const globalDir = process.env.DEEPSEEK_MCP_GLOBAL ?? GLOBAL_MCP_DIR;
-    files.push(path.join(globalDir, "mcp.json"));
-    files.push(path.join(cwd, ".mcp.json"));
+    files.push({ path: path.join(globalDir, "mcp.json"), scope: "global" });
+    files.push({ path: path.join(cwd, ".mcp.json"), scope: "project" });
   }
   const merged: Record<string, McpServerConfig> = {};
-  for (const f of files) {
+  for (const { path: f, scope } of files) {
     if (!existsSync(f)) continue;
     try {
       const raw = await fs.readFile(f, "utf-8");
       const parsed = JSON.parse(raw) as Partial<McpConfig>;
       if (parsed?.mcpServers && typeof parsed.mcpServers === "object") {
         for (const [k, v] of Object.entries(parsed.mcpServers)) {
-          if (v && typeof v.command === "string") merged[k] = v;
+          if (v && typeof v.command === "string") {
+            merged[k] = { ...v, _scope: scope };
+          }
         }
       }
     } catch {
@@ -68,13 +73,17 @@ export class McpRegistry {
   private dangerous = new Map<string, boolean>();
   /** Disabled servers stay connected but their tools are hidden from the model. */
   private disabled = new Set<string>();
+  /** Scope (global/project) per server, for the /mcp listing. */
+  private scopes = new Map<string, "global" | "project">();
 
   /** Spawn + initialize all servers, collecting their tools. Best-effort. */
   async load(config: McpConfig): Promise<LoadedServer[]> {
     const results: LoadedServer[] = [];
     for (const [name, serverCfg] of Object.entries(config.mcpServers)) {
       const dangerous = serverCfg.isDangerous === true;
+      const scope = serverCfg._scope;
       this.dangerous.set(name, dangerous);
+      if (scope) this.scopes.set(name, scope);
       try {
         const transport = new StdioMcpTransport(serverCfg);
         await transport.start();
@@ -82,12 +91,13 @@ export class McpRegistry {
         await client.connect();
         const tools = await client.listTools();
         this.clients.set(name, client);
-        for (const t of tools) this.bound.push({ serverName: name, toolDef: t, dangerous });        results.push({ name, toolCount: tools.length, ok: true, enabled: true, dangerous });
-        log.info("mcp connected", { server: name, tools: tools.length });
+        for (const t of tools) this.bound.push({ serverName: name, toolDef: t, dangerous });
+        results.push({ name, toolCount: tools.length, ok: true, enabled: true, dangerous, scope });
+        log.info("mcp connected", { server: name, tools: tools.length, scope });
         printSystem(`mcp: ${name} connected (${tools.length} tool${tools.length === 1 ? "" : "s"})`, "green");
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        results.push({ name, toolCount: 0, ok: false, enabled: false, dangerous, error: msg });
+        results.push({ name, toolCount: 0, ok: false, enabled: false, dangerous, scope, error: msg });
         log.error("mcp connect failed", { server: name, error: msg });
         printSystem(`mcp: ${name} failed to start — ${msg}`, "yellow");
       }
@@ -98,7 +108,9 @@ export class McpRegistry {
   /** Spawn + connect one server live (mid-session), bind its tools. */
   async addServer(name: string, serverCfg: McpServerConfig): Promise<LoadedServer> {
     const dangerous = serverCfg.isDangerous === true;
+    const scope = serverCfg._scope;
     this.dangerous.set(name, dangerous);
+    if (scope) this.scopes.set(name, scope);
     // If already connected, close the old instance first.
     if (this.clients.has(name)) {
       await this.clients.get(name)!.close().catch(() => {});
@@ -113,9 +125,10 @@ export class McpRegistry {
       await client.connect();
       const tools = await client.listTools();
       this.clients.set(name, client);
-      for (const t of tools) this.bound.push({ serverName: name, toolDef: t, dangerous: serverCfg.isDangerous === true });      log.info("mcp connected", { server: name, tools: tools.length });
+      for (const t of tools) this.bound.push({ serverName: name, toolDef: t, dangerous: serverCfg.isDangerous === true });
+      log.info("mcp connected", { server: name, tools: tools.length, scope });
       printSystem(`mcp: ${name} connected (${tools.length} tool${tools.length === 1 ? "" : "s"})`, "green");
-      return { name, toolCount: tools.length, ok: true, enabled: true, dangerous };
+      return { name, toolCount: tools.length, ok: true, enabled: true, dangerous, scope };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       log.error("mcp connect failed", { server: name, error: msg });
@@ -212,6 +225,7 @@ export class McpRegistry {
       ok: true,
       enabled: !this.disabled.has(name),
       dangerous: this.dangerous.get(name) === true,
+      scope: this.scopes.get(name),
     }));
   }
 
@@ -222,6 +236,7 @@ export class McpRegistry {
     this.bound = [];
     this.disabled.clear();
     this.dangerous.clear();
+    this.scopes.clear();
   }
 }
 
