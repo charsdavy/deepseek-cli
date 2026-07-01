@@ -35,12 +35,17 @@ function elapsedSuffix(startMs: number): string {
 function render(): void {
   if (!active || outputSilent) return;
   const frame = active.frames[active.frame % active.frames.length];
-  // \r → col 0 · \x1b[0m reset · \x1b[K erase-to-end-of-line so leftover text
-  // from the previous input row can never bleed into the spinner frame.
-  // Trailing \r moves the cursor back to col 0 after writing the frame text,
-  // so the user's cursor never sits at the end of "thinking…" — it's always
-  // at the beginning of the line, ready for the user to type queued input.
-  process.stdout.write(`\r${C.reset}\x1b[K${frame} ${paint.gray(active.text)}${elapsedSuffix(active.startMs)}\r`);
+  const suffix = elapsedSuffix(active.startMs);
+  // The spinner occupies one line; the cursor sits on the EMPTY line below
+  // it at col 0, so the user can type queued input while the AI works.
+  //
+  // First frame: just write the frame + move down to the empty line.
+  // Subsequent frames: move up (\x1b[A), clear, rewrite, move back down.
+  // \n moves the cursor down one line; \r goes to col 0.
+  if (active.frame > 0) {
+    process.stdout.write(`\x1b[A`);
+  }
+  process.stdout.write(`\r${C.reset}\x1b[K${frame} ${paint.gray(active.text)}${suffix}\n\r`);
   active.frame++;
 }
 
@@ -81,15 +86,16 @@ export const spinner = {
     }
     clearInterval(active.id);
     if (!outputSilent) {
+      // The cursor is on the empty line below the spinner (placed there by
+      // render's trailing \n\r). Move up to the spinner line before acting.
       if (active.keepOnStop) {
-        // Render one final static frame (bright ⏺) and move to a new line,
-        // preserving the tool header as a permanent record.
-        active.frame = 0; // force bright ⏺
-        render();
-        process.stdout.write("\n");
+        // Render one final static frame (bright ⏺) and move to the next
+        // line, preserving the tool header as a permanent record.
+        const frame = active.frames[0]; // force bright ⏺
+        process.stdout.write(`\x1b[A\r${C.reset}\x1b[K${frame} ${paint.gray(active.text)}\n\r`);
       } else {
-        // Clear the spinner line.
-        process.stdout.write(`\r${C.reset}\x1b[K`);
+        // Clear the spinner line → cursor at col 0 of the now-empty line.
+        process.stdout.write(`\x1b[A\r${C.reset}\x1b[K`);
       }
     }
     active = null;
