@@ -91,8 +91,14 @@ export async function runAgentLoop(
 
     // Bail out early if the user aborted the turn.
     if (opts.signal?.aborted) {
+      spinner.stop();
       return { messages, iterations, finalText, usage: lastUsage, aborted: true };
     }
+
+    // Restart the spinner for this iteration's "thinking" phase. Without this,
+    // after tools finish (spinner.stop) and the next API call starts, the
+    // terminal shows a bare blinking cursor instead of an active indicator.
+    spinner.start("thinking…");
 
     // Trim context if necessary
     const trimmed = trimToFit(messages, opts.maxContext);
@@ -162,10 +168,12 @@ export async function runAgentLoop(
       }
       // An AbortError means the user interrupted the stream — stop cleanly.
       if (opts.signal?.aborted || (e instanceof Error && e.name === "AbortError")) {
+        spinner.stop();
         log.info("agent loop aborted", { iteration: iterations });
         printSystem("interrupted", "yellow");
         return { messages, iterations, finalText, usage: lastUsage, aborted: true };
       }
+      spinner.stop();
       const msg = e instanceof Error ? e.message : String(e);
       log.error("api error", { error: msg, iteration: iterations, status: (e as { status?: number }).status });
       printError(`API error: ${msg}`);
@@ -242,15 +250,22 @@ export async function runAgentLoop(
     if (pending.length > 0) {
       // The assistant's streamed content/reasoning may not have ended with a
       // newline (e.g. "Let me read the file." then tool_calls in the same turn).
-      // Each ⏺ tool header MUST start at column 0 — flush a newline if needed
+      // Each ⏺ tool marker MUST start at column 0 — flush a newline if needed
       // so the marker never glues onto a trailing content line.
       const streamed = acc.content || acc.reasoning;
       if (streamed.length > 0 && !streamed.endsWith("\n")) writeLine();
 
-      // Announce all approved calls up front, then run them concurrently.
-      for (const p of pending) printToolHeader(p.name, summarizeArgs(p.args));
-      const label = pending.length === 1 ? "running tool…" : `running ${pending.length} tools in parallel…`;
-      spinner.start(label);
+      // Show a blinking ⏺ marker while tools execute. For a single tool, the
+      // marker line carries the tool name + args so it serves as both the
+      // "in progress" indicator and the permanent record (once it stops
+      // blinking). For multiple tools, use a summary label and print the
+      // individual headers as permanent lines after execution.
+      if (pending.length === 1) {
+        spinner.startTool(`${paint.bold(pending[0].name)} ${paint.gray(summarizeArgs(pending[0].args))}`);
+      } else {
+        for (const p of pending) printToolHeader(p.name, summarizeArgs(p.args));
+        spinner.startTool(`running ${pending.length} tools in parallel…`);
+      }
 
       const ctx: ToolContext = {
         cwd: opts.cwd ?? process.cwd(),
