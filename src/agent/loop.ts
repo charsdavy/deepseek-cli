@@ -422,8 +422,13 @@ export function makeStreamRenderer(opts: StreamRenderOptions) {
 
   return {
     onContentDelta(delta: string) {
+      // The agent loop restarts the "thinking…" spinner at the top of every
+      // iteration. In iteration 2+ the `started` flag is already true from
+      // a previous iteration, so the `!started` branch below is skipped —
+      // but the spinner is still active and would clobber content lines
+      // every 80ms. Always stop it first; stop() is a no-op when idle.
+      spinner.stop();
       if (!started) {
-        spinner.stop();
         writeLine();
         labelLine();
         started = true;
