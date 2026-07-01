@@ -5,7 +5,7 @@
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import type { ChatMessage } from "../api/client.ts";
-import { DEFAULT_MODEL, findModel, isReasoningModel, MODELS } from "../api/models.ts";
+import { DEFAULT_MODEL, findModel, isReasoningModel, MODELS, resolveAutoModel } from "../api/models.ts";
 import { estimateConversationTokens } from "../api/tokens.ts";
 import { ensureDirs, getOrSetupApiKey, loadConfig, saveConfig } from "../config/config.ts";
 import { loadProjectInstructions } from "../config/instructions.ts";
@@ -633,7 +633,18 @@ interface TurnDeps {
 }
 
 async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
-  const renderer = makeStreamRenderer({ showReasoning: deps.reasoning === true, model: deps.model });
+  // Resolve "auto" model based on the latest user prompt.
+  let model = deps.model;
+  let reasoning = deps.reasoning;
+  if (model === "auto") {
+    const lastUser = [...session.messages].reverse().find((m) => m.role === "user");
+    const promptText = typeof lastUser?.content === "string" ? lastUser.content : "";
+    const resolved = resolveAutoModel(promptText);
+    model = resolved.model;
+    reasoning = resolved.reasoning;
+    printSystem(`auto → ${model}${reasoning ? " (reasoning)" : ""}`, "cyan");
+  }
+  const renderer = makeStreamRenderer({ showReasoning: reasoning === true, model });
   const turnStart = performance.now();
   // Collect tool names executed during the turn for the prompt log entry.
   const toolNames: string[] = [];
@@ -655,8 +666,8 @@ async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
   try {
     result = await runAgentLoop(session.messages, {
       apiKey: deps.apiKey,
-      model: deps.model,
-      reasoning: deps.reasoning,
+      model,
+      reasoning,
       reasoningEffort: deps.reasoningEffort,
       maxContext: deps.maxContext,
       temperature: deps.temperature,
@@ -719,9 +730,9 @@ async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
         sessionId: session.id,
         turn: turnIndex,
         prompt: promptText,
-        model: deps.model,
+        model,
         promptVariant: deps.promptVariant ?? session.promptVariant,
-        reasoning: deps.reasoning,
+        reasoning,
         reasoningEffort: deps.reasoningEffort,
         iterations: result.iterations,
         toolCalls: toolCallCount,
@@ -1064,17 +1075,17 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
       // Exploration-phase shortcut: switch to the fastest non-thinking model
       // and disable reasoning. read_file/grep/list_dir round-trips become
       // seconds faster (no chain-of-thought before each tool call).
-      ctx.setModel("deepseek-chat");
+      ctx.setModel("deepseek-v4-flash");
       await ctx.reasoning.set(false);
-      printSystem(`${symbol.bolt} fast mode — deepseek-chat, reasoning off (use /think to switch back)`, "green");
+      printSystem(`${symbol.bolt} fast mode — v4-flash, reasoning off (use /think to switch back)`, "green");
       return "continue";
     }
     case "think": {
       // Writing-code phase shortcut: switch to the reasoner + high effort.
-      ctx.setModel("deepseek-reasoner");
+      ctx.setModel("deepseek-v4-pro");
       await ctx.reasoning.set(true);
       await ctx.effort.set("high");
-      printSystem(`${symbol.brain} think mode — deepseek-reasoner, reasoning high (use /fast for exploration)`, "magenta");
+      printSystem(`${symbol.brain} think mode — v4-pro, reasoning high (use /fast for exploration)`, "magenta");
       return "continue";
     }
     case "model": {

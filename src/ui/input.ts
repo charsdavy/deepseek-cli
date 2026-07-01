@@ -163,6 +163,12 @@ export async function askMultiline(
   let acc = "";
   let overlayRows = 0; // lines drawn below the current input row (suggestions)
   let resolved = false;
+  // Multi-line rendering: track how many terminal lines the last render drew
+  // so we can move back up before redrawing (cursor up N lines).
+  let displayLines = 1;
+  // When a large paste is detected, show a summary instead of the full text.
+  // The full pasted content is in `buf`; this just controls the display.
+  let pasteSummary: string | null = null;
 
   const matches = (): string[] => {
     if (!buf.startsWith("/") || !suggest) return [];
@@ -172,26 +178,59 @@ export async function askMultiline(
   };
 
   const render = (): void => {
+    // Move up to the first displayed line (if multi-line was rendered).
+    if (displayLines > 1) {
+      output.write(`\x1b[${displayLines - 1}A`);
+    }
     // Clear the current line and everything below it (overlay), then redraw.
     output.write(`\r\x1b[J`);
-    output.write(curPrompt + buf);
+
+    if (pasteSummary) {
+      // Show paste summary as a single-line placeholder.
+      output.write(curPrompt + pasteSummary);
+      displayLines = 1;
+    } else {
+      // Render buf — may contain \n from Option+Enter or small pastes.
+      const lines = buf.split("\n");
+      output.write(curPrompt + lines[0]);
+      for (let i = 1; i < lines.length; i++) {
+        output.write(`\n\x1b[K${lines[i]}`);
+      }
+      displayLines = lines.length;
+    }
+
     const m = matches();
-    if (m.length > 0) {
+    if (m.length > 0 && displayLines === 1 && !pasteSummary) {
       output.write(`\n\x1b[K${paint.dim(m.join("  "))}`);
       overlayRows = 1;
       output.write(`\x1b[A`); // back up to the input row
     } else {
       overlayRows = 0;
     }
-    // Position the cursor at cur on the input row.
+    // Position the cursor at cur.
     output.write(`\r`);
-    const col = visWidth(curPrompt) + visWidth(buf.slice(0, cur));
-    if (col > 0) output.write(`\x1b[${col}C`);
+    if (pasteSummary) {
+      const col = visWidth(curPrompt) + visWidth(pasteSummary);
+      if (col > 0) output.write(`\x1b[${col}C`);
+    } else {
+      const beforeCursor = buf.slice(0, cur);
+      const beforeLines = beforeCursor.split("\n");
+      const lineIdx = beforeLines.length - 1;
+      if (lineIdx > 0) output.write(`\x1b[${lineIdx}B`); // move down to cursor's line
+      const promptW = lineIdx === 0 ? visWidth(curPrompt) : 0;
+      const col = promptW + visWidth(beforeLines[lineIdx]);
+      if (col > 0) output.write(`\x1b[${col}C`);
+    }
   };
 
   const cleanup = (): void => {
     tty.off("data", onData);
-    if (overlayRows > 0) output.write(`\r\x1b[J`); // erase the suggestions row
+    // Move up to the first display line and clear everything below.
+    if (displayLines > 1) {
+      output.write(`\x1b[${displayLines - 1}A`);
+    }
+    output.write(`\r\x1b[J`);
+    if (overlayRows > 0) output.write(`\r\x1b[J`);
     tty.setRawMode?.(savedRaw);
   };
 
@@ -223,6 +262,17 @@ export async function askMultiline(
     const b0 = data[0];
     // Escape sequences (arrows / delete / home / end).
     if (b0 === 0x1b) {
+      // Option+Enter (macOS): ESC + CR → insert a newline into the buffer
+      // so the user can type multi-line prompts without ``` fences.
+      if (data.length === 2 && data[1] === 0x0d) {
+        buf = buf.slice(0, cur) + "\n" + buf.slice(cur);
+        cur += 1;
+        histIdx = -1;
+        // Keep pasteSummary active if set — don't flood the terminal with
+        // the full pasted content; just insert the newline into buf.
+        render();
+        return;
+      }
       if (data.length >= 3 && data[1] === 0x5b) {
         const c = data[2];
         if (c === 0x41 && !fence) { // up — history older
@@ -244,6 +294,7 @@ export async function askMultiline(
     if (b0 === 0x7f || b0 === 0x08) { // backspace
       if (cur > 0) { buf = buf.slice(0, cur - 1) + buf.slice(cur); cur--; }
       histIdx = -1;
+      pasteSummary = null; // show full content after edit
       render();
       return;
     }
@@ -252,13 +303,31 @@ export async function askMultiline(
     if (b0 < 0x20) { render(); return; } // other control: ignore
     // Printable (UTF-8 ok): insert at cursor.
     const s = data.toString("utf-8");
+    // Detect a multi-line paste (bulk data with many newlines). Show a
+    // compact summary instead of flooding the terminal with pasted lines.
+    const lineCount = (s.match(/\n/g) || []).length;
+    if (lineCount > 5) {
+      buf = buf.slice(0, cur) + s + buf.slice(cur);
+      cur += s.length;
+      pasteSummary = paint.gray(`[pasted ${lineCount + 1} lines]`);
+      histIdx = -1;
+      render();
+      return;
+    }
     buf = buf.slice(0, cur) + s + buf.slice(cur);
     cur += s.length;
+    pasteSummary = null;
     histIdx = -1;
     render();
   };
 
   const handleEnter = (): void => {
+    // If a paste summary is shown, submit the full buf content directly
+    // (the pasted text is in buf, complete with newlines).
+    if (pasteSummary) {
+      submitLine(acc + buf);
+      return;
+    }
     const trimmedEnd = buf.replace(/\s+$/, "");
     const fenceMatch = trimmedEnd.match(/^```/);
     if (fenceMatch) {
