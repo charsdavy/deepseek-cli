@@ -37,7 +37,10 @@ function render(): void {
   const frame = active.frames[active.frame % active.frames.length];
   // \r → col 0 · \x1b[0m reset · \x1b[K erase-to-end-of-line so leftover text
   // from the previous input row can never bleed into the spinner frame.
-  process.stdout.write(`\r${C.reset}\x1b[K${frame} ${paint.gray(active.text)}${elapsedSuffix(active.startMs)}`);
+  // Trailing \r moves the cursor back to col 0 after writing the frame text,
+  // so the user's cursor never sits at the end of "thinking…" — it's always
+  // at the beginning of the line, ready for the user to type queued input.
+  process.stdout.write(`\r${C.reset}\x1b[K${frame} ${paint.gray(active.text)}${elapsedSuffix(active.startMs)}\r`);
   active.frame++;
 }
 

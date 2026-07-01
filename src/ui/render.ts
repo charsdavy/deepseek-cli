@@ -1,6 +1,6 @@
 // Terminal output helpers — markdown rendering, streaming, panels, spinner.
 
-import { combine, outputSilent, paint, symbol } from "./theme.ts";
+import { combine, outputSilent, paint, symbol, C } from "./theme.ts";
 export { setOutputSilent } from "./theme.ts";
 
 // ---- Low-level IO ----
@@ -142,8 +142,14 @@ function renderCodeBlock(code: string, lang: string): string {
   const header = lang ? paint.gray(`┌ ${lang} `) : paint.gray("┌ ");
   const top = header + paint.dim("─".repeat(Math.max(1, w - headerLength(header) - 1)));
   const bottom = paint.gray("└" + "─".repeat(Math.max(1, w - 1)));
+  const innerWidth = w - 3;
   const body = lines
-    .map((l) => `${paint.gray("│")} ${paint.dim(truncateLine(l, w - 2))}`)
+    .map((l) => {
+      const content = truncateLine(l, innerWidth);
+      const visLen = content.replace(/\x1b\[[0-9;]*m/g, "").length;
+      const pad = " ".repeat(Math.max(0, innerWidth - visLen));
+      return `${paint.gray("│")} ${C.bgGray}${C.white}${content}${pad}${C.reset}`;
+    })
     .join("\n");
   return [top, body, bottom].join("\n");
 }
@@ -156,8 +162,8 @@ function headerLength(header: string): number {
 // Inline formatting: **bold**, *italic*, `code`, [text](url)
 export function inline(text: string): string {
   let t = text;
-  // Inline code
-  t = t.replace(/`([^`]+)`/g, (_, c) => paint.inverse(paint.gray(c)));
+  // Inline code — gray background + white text for readability.
+  t = t.replace(/`([^`]+)`/g, (_, c) => `${C.bgGray}${C.white} ${c} ${C.reset}`);
   // Bold
   t = t.replace(/\*\*([^*]+)\*\*/g, (_, c) => paint.bold(c));
   // Italic
@@ -191,7 +197,7 @@ export class StreamMarkdown {
         this.inFence = false;
         return paint.gray("└" + "─".repeat(Math.max(1, termWidth() - 1)));
       }
-      return `${paint.gray("│")} ${paint.dim(line)}`;
+      return `${paint.gray("│")} ${C.bgGray}${C.white}${line}${C.reset}`;
     }
     // Opening code fence
     const fence = line.match(/^```(\w+)?\s*$/);
