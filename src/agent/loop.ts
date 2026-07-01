@@ -447,6 +447,14 @@ export function makeStreamRenderer(opts: StreamRenderOptions) {
       process.stdout.write(paint.dim(delta));
     },
     end() {
+      // If reasoning was the last output and didn't end with a newline,
+      // move to a fresh line so the cursor is at col 0 for subsequent
+      // output (prompts, separators, etc.). Reasoning is written raw via
+      // process.stdout.write so it may stop mid-line.
+      if (inReasoning) {
+        writeLine();
+        inReasoning = false;
+      }
       // Flush any remaining partial line
       if (lineBuf) {
         streamWrite(md.flush(lineBuf) + "\n");

@@ -199,8 +199,23 @@ export async function* streamChatCompletion(
   const decoder = new TextDecoder("utf-8");
   let buf = "";
 
+  // Active cancellation: when the signal fires (double-Esc / Ctrl-C),
+  // cancel the reader directly. In Bun, aborting an AbortSignal passed to
+  // fetch() doesn't always propagate to the body reader after headers
+  // arrive, so a pending reader.read() can hang indefinitely. Calling
+  // reader.cancel() forces the pending read to reject (or resolve with
+  // done=true), unblocking the loop so the agent can stop promptly.
+  const onAbort = () => { reader.cancel().catch(() => {}); };
+  opts.signal?.addEventListener("abort", onAbort);
+
   try {
     while (true) {
+      // Catch aborts that fire between chunks (while data is flowing).
+      if (opts.signal?.aborted) {
+        const e = new Error("aborted");
+        e.name = "AbortError";
+        throw e;
+      }
       const { value, done } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
@@ -234,6 +249,14 @@ export async function* streamChatCompletion(
         yield chunk;
       }
     }
+    // reader.cancel() (from the abort listener) may cause read() to resolve
+    // with done=true rather than rejecting. Check the signal and throw so
+    // the caller knows the turn was interrupted.
+    if (opts.signal?.aborted) {
+      const e = new Error("aborted");
+      e.name = "AbortError";
+      throw e;
+    }
   } catch (e) {
     const streamMs = roundMs(performance.now() - reqStart);
     const aborted = opts.signal?.aborted || (e instanceof Error && e.name === "AbortError");
@@ -244,6 +267,7 @@ export async function* streamChatCompletion(
     }
     throw e;
   } finally {
+    opts.signal?.removeEventListener("abort", onAbort);
     reader.releaseLock();
     const streamMs = roundMs(performance.now() - reqStart);
     log.debug("api stream done", {
