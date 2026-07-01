@@ -67,10 +67,12 @@ async function runRg(pattern: string, cwd: string, include?: string): Promise<To
     "--max-count=200",
     "-e",
     pattern,
-    include ? `--glob=${include}` : ".",
   ];
+  if (include) args.push(`--glob=${include}`);
+  args.push("."); // explicit path: without it, rg reads stdin (a pipe from
+                  // execFile) and blocks forever when no path is given.
   try {
-    const { stdout } = await execFileAsync("rg", args, { cwd, maxBuffer: 5_000_000 });
+    const { stdout } = await execFileAsync("rg", args, { cwd, maxBuffer: 5_000_000, timeout: 30_000 });
     const lines = stdout.split("\n").filter(Boolean).slice(0, 200);
     return {
       ok: true,
@@ -80,7 +82,7 @@ async function runRg(pattern: string, cwd: string, include?: string): Promise<To
       uiSummary: `grep ${pattern} (${lines.length} matches)`,
     };
   } catch (e: unknown) {
-    const err = e as { code?: number; stderr?: string };
+    const err = e as { code?: number; stderr?: string; signal?: string };
     if (err.code === 1) {
       return { ok: true, content: "(no matches)", uiSummary: `grep ${pattern} (0 matches)` };
     }

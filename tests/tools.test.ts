@@ -486,3 +486,53 @@ describe("DeepSeek client SSE parsing", () => {
     expect(parsed.reasoning_effort).toBe("max");
   });
 });
+
+// ---- grep tool (stdin-hang regression) ----
+import { grepTool } from "../src/tools/grep.ts";
+
+describe("grep tool", () => {
+  let tmp: string;
+
+  beforeEach(async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "ds-grep-test-"));
+    // Create test files: .ts, .swift, and a .md
+    await fs.writeFile(path.join(tmp, "a.ts"), "const hello = 'world';\nconsole.log(hello);\n");
+    await fs.writeFile(path.join(tmp, "b.swift"), "struct EntryViewModel { }\nlet x = 1\n");
+    await fs.writeFile(path.join(tmp, "c.md"), "# hello world\n");
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  it("does not hang when include is provided (regression: rg reads stdin)", async () => {
+    // Before the fix, `include ? --glob=X : "."` omitted the path arg, so rg
+    // tried to read from its stdin pipe (which execFile never closes) and
+    // blocked forever. This test asserts the call completes promptly.
+    const start = Date.now();
+    const result = await grepTool.execute({ pattern: "hello", include: "*.ts", path: tmp }, { cwd: tmp });
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(10_000); // must not hang
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("a.ts");
+  });
+
+  it("include filter actually restricts the search to matching files", async () => {
+    const result = await grepTool.execute({ pattern: "hello", include: "*.ts", path: tmp }, { cwd: tmp });
+    expect(result.content).toContain("a.ts");
+    expect(result.content).not.toContain("c.md"); // .md excluded by glob
+  });
+
+  it("works without include (searches all files)", async () => {
+    const result = await grepTool.execute({ pattern: "hello", path: tmp }, { cwd: tmp });
+    expect(result.ok).toBe(true);
+    // "hello" appears in a.ts and c.md
+    expect(result.content).toContain("a.ts");
+  });
+
+  it("include=*.swift searches only swift files", async () => {
+    const result = await grepTool.execute({ pattern: "EntryViewModel", include: "*.swift", path: tmp }, { cwd: tmp });
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("b.swift");
+  });
+});
