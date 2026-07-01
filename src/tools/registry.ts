@@ -11,6 +11,7 @@ import { bashTool } from "./bash.ts";
 import { globTool } from "./glob.ts";
 import { grepTool } from "./grep.ts";
 import { webFetchTool } from "./web_fetch.ts";
+import { webSearchTool } from "./web_search.ts";
 import { todoWriteTool } from "./todo.ts";
 import { gitDiffTool } from "./git_diff.ts";
 import { gitStatusTool } from "./git_status.ts";
@@ -26,6 +27,7 @@ const BUILTIN_TOOLS: Tool[] = [
   globTool,
   grepTool,
   webFetchTool,
+  webSearchTool,
   todoWriteTool,
   gitDiffTool,
   gitStatusTool,

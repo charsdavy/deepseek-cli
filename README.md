@@ -14,7 +14,7 @@ The CLI pairs streaming chat completions with **tool calling** — the model can
 
 - **Agentic tool loop** — model drives the work: read → edit → bash → grep until the task is done.
 - **Streaming** chat with reasoning trace support (`deepseek-reasoner`).
-- **12 built-in tools**: `read_file`, `write_file`, `edit_file`, `bash`, `glob`, `grep`, `web_fetch`, `git_diff`, `git_status`, `list_dir`, `task`, `todo_write`.
+- **13 built-in tools**: `read_file`, `write_file`, `edit_file`, `bash`, `glob`, `grep`, `web_fetch`, `web_search`, `git_diff`, `git_status`, `list_dir`, `task`, `todo_write`.
 - **Sub-agents** — the `task` tool spawns nested agent loops; independent subtasks run in **parallel** when issued together.
 - **MCP support** — connect Model Context Protocol servers (stdio) and use their tools alongside the built-ins; toggle servers per-session with `/mcp`.
 - **Skills** — load specialized instruction packs from deepseek **and** Claude Code / Codex / codemaker skill dirs (both flat `<name>.md` and directory `<name>/SKILL.md` layouts, incl. symlinked); pick which are active with `/skill`.
@@ -249,6 +249,21 @@ Reference files inline with `@path` (relative to cwd); their contents are attach
 
 The REPL keeps prompt history in `~/.deepseek-cli/history`; press **Up/Down** at an empty prompt to recall previous inputs across sessions. `/reasoning on|off` toggles the thinking default and persists it for future sessions.
 
+### Web search (on-demand)
+
+`web_search` queries the public web via DuckDuckGo's no-JS HTML endpoint — **no API key required, zero config**. It returns up to N results with title/url/snippet in a model-friendly envelope:
+
+```
+<web_search query="deepseek api model names" count="3">
+1. Lists Models | DeepSeek API Docs
+   https://api-docs.deepseek.com/api/list-models/
+   Lists the currently available models, and provides basic information …
+2. …
+</web_search>
+```
+
+The system prompt only invokes it when the model genuinely needs fresh information beyond its training data (latest library versions, recent docs, release notes, news). For things the model could already know, or could derive from local files, the prompt deliberately says "do NOT use web_search — that wastes a network round-trip". The natural pairing is `web_search → web_fetch`: discover the right URL first, then fetch the best hit for deeper reading.
+
 ## Logging & troubleshooting
 
 Diagnostic events are written as JSON lines to `~/.deepseek-cli/logs/deepseek-YYYY-MM-DD.log` (daily rotation, 7-day retention, 5 MB size cap). This is the first place to look when a turn errors, an MCP server won't connect, or the agent loops. **Sensitive data is redacted** before write — API keys (`sk-…`/`ghp_…`) are masked and secret-named fields (`apiKey`/`token`/`Authorization`/…) become `***`.
@@ -343,6 +358,7 @@ src/
 │   ├── glob.ts           # Bun.Glob-backed matcher + pure-JS brace-aware fallback
 │   ├── grep.ts           # ripgrep with Node fallback
 │   ├── web_fetch.ts      # URL fetch with HTML → Markdown conversion
+│   ├── web_search.ts     # DuckDuckGo search (no API key) → title/url/snippet
 │   ├── git_helpers.ts    # shared spawn-based git runner (no shell)
 │   ├── git_diff.ts       # read-only structured `git diff`
 │   ├── git_status.ts     # read-only structured `git status` (porcelain + branch)

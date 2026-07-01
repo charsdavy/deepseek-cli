@@ -63,6 +63,12 @@ You have the following tools. Pick the most specific one for each job.
 - grep — content search inside files. Prefer this over \`grep\` in bash.
 - list_dir — quick single-level folder overview. Prefer over \`ls\` in bash.
 - web_fetch — fetch external HTTP(S) URLs.
+- web_search — search the public web via DuckDuckGo. Use ON DEMAND only for
+  fresh information beyond your training data (latest library versions,
+  recent docs, release notes, news). Do NOT use for things you already know
+  or can derive from local files — that wastes a network round-trip. Pairs
+  with web_fetch: search to discover, then fetch the best hit for deeper
+  reading.
 - git_diff — read-only structured view of \`git diff\`. Prefer this over
   \`bash git diff\` for inspecting uncommitted or ref-to-ref changes.
 - git_status — read-only structured view of \`git status\` (porcelain + branch).
