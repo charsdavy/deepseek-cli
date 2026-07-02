@@ -223,17 +223,6 @@ export async function askMultiline(
     }
   };
 
-  const cleanup = (): void => {
-    tty.off("data", onData);
-    // Move up to the first display line and clear everything below.
-    if (displayLines > 1) {
-      output.write(`\x1b[${displayLines - 1}A`);
-    }
-    output.write(`\r\x1b[J`);
-    if (overlayRows > 0) output.write(`\r\x1b[J`);
-    tty.setRawMode?.(savedRaw);
-  };
-
   const tabComplete = (): void => {
     const m = matches();
     if (m.length === 0) return;
