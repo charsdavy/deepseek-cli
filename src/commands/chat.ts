@@ -467,6 +467,15 @@ export async function runChat(args: ChatArgs): Promise<void> {
 
   // ---- Interactive REPL ----
   printWelcome(model, reasoning, skipAll, baseUrl);
+  // A huge context budget combined with a reasoning model is the single
+  // biggest perceived-slowness source: every turn resends the full budget
+  // worth of tokens AND pays thinking overhead on top. Warn up-front so the
+  // user can lower it via /model before experiencing multi-minute turns.
+  if (maxContext && maxContext > 200_000) {
+    const budget = maxContext >= 1_000_000 ? "1M" : `${Math.round(maxContext / 1000)}k`;
+    const tip = `warning: maxContext=${budget}${reasoning ? " + reasoning" : ""} — each turn resends that much context; expect slow turns and high token cost. Run /model to lower the context budget.`;
+    printSystem(tip, "yellow");
+  }
   printTip("type /help for commands · type during AI turns to queue prompts · double-tap Esc to abort · /exit to quit · /fast ↔ /think to switch model");
   blank();
 
@@ -1036,8 +1045,8 @@ export async function runModelSetupFlow(ctx: SlashCtx, pick: Picker = selectOpti
     { label: "60k (default)", value: "60000" },
     { label: "100k", value: "100000" },
     { label: "150k", value: "150000" },
-    { label: "500k", value: "500000" },
-    { label: "1M (max)", value: "1000000" },
+    { label: "500k (slow + costly)", value: "500000" },
+    { label: "1M (very slow + costly — only for huge codebases)", value: "1000000" },
   ];
   const cIdx = presets.findIndex((p) => p.value !== "keep" && Math.abs(Number(p.value) - curCtx) < 5000);
   const ctxPick = await pick("Context budget", presets, Math.max(0, cIdx));

@@ -33,10 +33,22 @@ async function main(): Promise<void> {
 
   // Capture crashes so users can find them in the log file.
   process.on("uncaughtException", (e) => {
-    log.error("uncaughtException", { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined });
+    const msg = e instanceof Error ? e.message : String(e);
+    // EPIPE: the output pipe (stdout) went away — e.g. the user piped output
+    // to `head`/another process that exited, or the terminal detached. readline
+    // keeps trying to refresh its prompt line and throws EPIPE on every write,
+    // which would otherwise loop the handler forever. There's nothing useful
+    // to write once the pipe is gone, so log once and exit cleanly.
+    if (msg.includes("EPIPE")) {
+      log.error("uncaughtException", { error: msg, note: "output pipe closed — exiting" });
+      process.exit(0);
+    }
+    log.error("uncaughtException", { error: msg, stack: e instanceof Error ? e.stack : undefined });
+    process.exit(1);
   });
   process.on("unhandledRejection", (e) => {
     log.error("unhandledRejection", { error: e instanceof Error ? e.message : String(e) });
+    process.exit(1);
   });
 
   switch (args.command) {

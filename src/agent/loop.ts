@@ -83,7 +83,14 @@ export async function runAgentLoop(
   let readOnlyStreak = 0;
   let explorationHintShown = false;
   const EXPLORATION_HINT_THRESHOLD = 3;
-  log.info("agent loop start", { model: opts.model, reasoning: shouldReason, reasonEffort: opts.reasoningEffort, messages: messagesIn.length, maxIterations });
+  // Per-loop (cross-iteration) trackers for hallucinated tool names. A model
+  // can fire the same bogus name once per iteration for many iterations
+  // (observed: "nope" × 43 across a single session); counting across iterations
+  // lets us short-circuit the whole turn, not just one iteration.
+  const unknownCounts = new Map<string, number>();
+  let abuseDetected = false;
+  const registeredNames = tools.list().map((t) => t.name).join(", ");
+  log.info("agent loop start", { model: opts.model, reasoning: shouldReason, reasonEffort: opts.reasoningEffort, maxContext: opts.maxContext, messages: messagesIn.length, maxIterations });
 
   while (iterations < maxIterations) {
     iterations++;
@@ -225,6 +232,9 @@ export async function runAgentLoop(
       args: Record<string, unknown>;
     }
     const pending: PendingTask[] = [];
+    // unknownCounts / abuseDetected / registeredNames are declared at loop
+    // scope (above the while) so the hallucination guard accumulates across
+    // iterations, not just within one.
 
     for (const tc of acc.toolCalls) {
       const args = safeParseArgs(tc.arguments);
@@ -238,9 +248,33 @@ export async function runAgentLoop(
         continue;
       }
 
+      // Once abuse is detected, skip every remaining tool call in this turn
+      // (still push a tool message per slot so tool_call/message counts stay
+      // consistent for the next API request — a mismatch causes a 400).
+      if (abuseDetected) {
+        messages.push({ role: "tool", tool_call_id: tc.id, content: "Skipped — turn aborted due to repeated unknown-tool calls." });
+        continue;
+      }
+
       const tool = tools.get(tc.name);
       if (!tool) {
-        messages.push({ role: "tool", tool_call_id: tc.id, content: `Tool '${tc.name}' is not registered.` });
+        const c = (unknownCounts.get(tc.name) ?? 0) + 1;
+        unknownCounts.set(tc.name, c);
+        if (c >= 3) {
+          abuseDetected = true;
+          log.warn("unknown tool abuse", { name: tc.name, count: c, iteration: iterations });
+          messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `STOP: '${tc.name}' is not a registered tool — you have called it ${c} times this turn. This is a dead loop. Choose ONLY from: ${registeredNames}. If none applies, answer in plain text with no tool call. The remaining tool calls this turn are skipped.`,
+          });
+        } else {
+          messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Tool '${tc.name}' does not exist. Available tools: ${registeredNames}. Pick one of those by its exact name, or respond without a tool call.`,
+          });
+        }
         continue;
       }
 

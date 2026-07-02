@@ -105,6 +105,33 @@ function roundMs(n: number): number {
   return Math.round(n);
 }
 
+// Watchdog timeouts guarding against hung API streams. Observed in the wild:
+// a single iteration can spend 55+ minutes stuck in reader.read() when the
+// server accepts the connection but never resumes the SSE stream. These caps
+// bound a stuck request so the agent loop can surface an error instead of
+// freezing the whole turn.
+const FIRST_BYTE_TIMEOUT_MS = 120_000; // no data at all 120s after fetch resolves
+const CHUNK_GAP_TIMEOUT_MS = 60_000; // 60s with no new SSE event mid-stream
+
+/**
+ * Combine two abort signals into one that fires when either input fires.
+ * Uses AbortSignal.any when available (Bun 1.1+ / Node 20+); falls back to a
+ * manual bridge so older runtimes still work.
+ */
+function mergeSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
+  if (a.aborted) return a;
+  if (b.aborted) return b;
+  const anyFn = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
+  if (typeof anyFn === "function") return anyFn.call(AbortSignal, [a, b]);
+  const c = new AbortController();
+  const bridge = (sig: AbortSignal) => () => c.abort(sig.reason);
+  const onA = bridge(a);
+  const onB = bridge(b);
+  a.addEventListener("abort", onA, { once: true });
+  b.addEventListener("abort", onB, { once: true });
+  return c.signal;
+}
+
 export async function* streamChatCompletion(
   opts: ChatOptions,
 ): AsyncGenerator<ChatStreamChunk, void, void> {
@@ -122,10 +149,12 @@ export async function* streamChatCompletion(
   if (opts.reasoning) {
     // DeepSeek-specific extension to enable thinking trace
     body.thinking = { type: "enabled" };
-  }
-  if (opts.reasoningEffort) {
-    // "high" (default) or "max"; the API maps low/medium→high, xhigh→max.
-    body.reasoning_effort = opts.reasoningEffort;
+    // Effort is only meaningful with the thinking trace enabled; sending it
+    // standalone (reasoning off but effort set) is a no-op against the API
+    // and a symptom of a stale/inconsistent config — gate it on reasoning.
+    if (opts.reasoningEffort) {
+      body.reasoning_effort = opts.reasoningEffort;
+    }
   }
 
   const reqId = randomReqId();
@@ -137,6 +166,25 @@ export async function* streamChatCompletion(
   let finalUsage: TokenUsage | undefined;
 
   let res: Response;
+  // Watchdog: a dedicated controller so we can abort a hung request without
+  // depending on the user's manual abort signal. Merged with opts.signal so
+  // either one cancels the fetch and the body reader.
+  const timeoutController = new AbortController();
+  const signal = opts.signal ? mergeSignals(opts.signal, timeoutController.signal) : timeoutController.signal;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const armWatchdog = (ms: number, reason: string) => {
+    if (watchdog) clearTimeout(watchdog);
+    watchdog = setTimeout(() => {
+      timedOut = true;
+      log.warn("api stream timeout", { reqId, model: opts.model, reason, ms });
+      timeoutController.abort();
+    }, ms);
+  };
+  // Start the first-byte timer as soon as the request leaves; fetch resolves
+  // once response headers arrive, but if the server hangs mid-handshake this
+  // never fires and the timer is cleared in the first-chunk path below.
+  armWatchdog(FIRST_BYTE_TIMEOUT_MS, "no first byte");
   try {
     res = await fetch(`${opts.baseUrl ?? BASE_URL}/v1/chat/completions`, {
       method: "POST",
@@ -146,12 +194,15 @@ export async function* streamChatCompletion(
         Accept: "text/event-stream",
       },
       body: JSON.stringify(body),
-      signal: opts.signal,
+      signal,
     });
   } catch (e) {
     const fetchMs = roundMs(performance.now() - reqStart);
+    if (watchdog) clearTimeout(watchdog);
     const aborted = opts.signal?.aborted || (e instanceof Error && e.name === "AbortError");
-    if (aborted) {
+    if (timedOut) {
+      log.warn("api fetch timed out", { reqId, model: opts.model, fetchMs });
+    } else if (aborted) {
       log.debug("api fetch aborted", { reqId, model: opts.model, fetchMs });
     } else {
       log.error("api fetch failed", { reqId, model: opts.model, fetchMs, error: e instanceof Error ? e.message : String(e) });
@@ -162,6 +213,7 @@ export async function* streamChatCompletion(
   const fetchMs = roundMs(performance.now() - reqStart);
 
   if (!res.ok) {
+    if (watchdog) clearTimeout(watchdog);
     const text = await res.text().catch(() => "");
     log.warn("api request failed", {
       reqId,
@@ -182,6 +234,7 @@ export async function* streamChatCompletion(
   }
 
   if (!res.body) {
+    if (watchdog) clearTimeout(watchdog);
     log.error("api empty body", { reqId, model: opts.model, fetchMs });
     throw new DeepSeekError("Empty response body from DeepSeek API.");
   }
@@ -199,19 +252,19 @@ export async function* streamChatCompletion(
   const decoder = new TextDecoder("utf-8");
   let buf = "";
 
-  // Active cancellation: when the signal fires (double-Esc / Ctrl-C),
-  // cancel the reader directly. In Bun, aborting an AbortSignal passed to
-  // fetch() doesn't always propagate to the body reader after headers
-  // arrive, so a pending reader.read() can hang indefinitely. Calling
-  // reader.cancel() forces the pending read to reject (or resolve with
-  // done=true), unblocking the loop so the agent can stop promptly.
+  // Active cancellation: when the signal fires (double-Esc / Ctrl-C, or the
+  // watchdog timeout above), cancel the reader directly. In Bun, aborting an
+  // AbortSignal passed to fetch() doesn't always propagate to the body reader
+  // after headers arrive, so a pending reader.read() can hang indefinitely.
+  // Calling reader.cancel() forces the pending read to reject (or resolve
+  // with done=true), unblocking the loop so the agent can stop promptly.
   const onAbort = () => { reader.cancel().catch(() => {}); };
-  opts.signal?.addEventListener("abort", onAbort);
+  signal.addEventListener("abort", onAbort);
 
   try {
     while (true) {
       // Catch aborts that fire between chunks (while data is flowing).
-      if (opts.signal?.aborted) {
+      if (signal.aborted) {
         const e = new Error("aborted");
         e.name = "AbortError";
         throw e;
@@ -230,7 +283,12 @@ export async function* streamChatCompletion(
           if (firstChunkMs === undefined) {
             firstChunkMs = roundMs(performance.now() - reqStart);
             log.debug("api first chunk", { reqId, ttfbMs: firstChunkMs, fetchMs });
+            // Switch from the (longer) first-byte cap to the per-chunk-gap
+            // cap: bytes are now flowing, so a stall means the stream died.
+            armWatchdog(CHUNK_GAP_TIMEOUT_MS, "chunk gap");
           }
+          // Every flowing event resets the gap watchdog.
+          armWatchdog(CHUNK_GAP_TIMEOUT_MS, "chunk gap");
           chunkCount++;
           if (chunk.usage) finalUsage = chunk.usage;
           yield chunk;
@@ -252,22 +310,25 @@ export async function* streamChatCompletion(
     // reader.cancel() (from the abort listener) may cause read() to resolve
     // with done=true rather than rejecting. Check the signal and throw so
     // the caller knows the turn was interrupted.
-    if (opts.signal?.aborted) {
+    if (signal.aborted) {
       const e = new Error("aborted");
       e.name = "AbortError";
       throw e;
     }
   } catch (e) {
     const streamMs = roundMs(performance.now() - reqStart);
-    const aborted = opts.signal?.aborted || (e instanceof Error && e.name === "AbortError");
-    if (aborted) {
+    const aborted = signal.aborted || (e instanceof Error && e.name === "AbortError");
+    if (timedOut) {
+      log.warn("api stream timed out", { reqId, streamMs, chunks: chunkCount });
+    } else if (aborted) {
       log.debug("api stream aborted", { reqId, streamMs, chunks: chunkCount });
     } else {
       log.error("api stream error", { reqId, streamMs, chunks: chunkCount, error: e instanceof Error ? e.message : String(e) });
     }
     throw e;
   } finally {
-    opts.signal?.removeEventListener("abort", onAbort);
+    if (watchdog) clearTimeout(watchdog);
+    signal.removeEventListener("abort", onAbort);
     reader.releaseLock();
     const streamMs = roundMs(performance.now() - reqStart);
     log.debug("api stream done", {

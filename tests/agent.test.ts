@@ -367,4 +367,41 @@ describe("runAgentLoop", () => {
       globalThis.fetch = origFetch;
     }
   });
+
+  it("short-circuits a turn after the same hallucinated tool name repeats across iterations", async () => {
+    // Regression guard for the "nope × N" loop observed in production: the
+    // model fires a non-existent tool name once per iteration. After the 3rd
+    // occurrence the loop pushes a STOP message and any further bogus calls
+    // are skipped, so the model converges instead of looping to maxIterations.
+    const tools = registryWith(echoTool);
+    const perms = new PermissionManager({ mode: "auto" });
+
+    const mkNope = (id: string) => sseData({
+      choices: [{ delta: { tool_calls: [{ index: 0, id, function: { name: "nope", arguments: "{}" } }] } }],
+    });
+    const responses = [
+      sseResponse([mkNope("c1")]), // count=1 → "does not exist"
+      sseResponse([mkNope("c2")]), // count=2 → "does not exist"
+      sseResponse([mkNope("c3")]), // count=3 → STOP + abuseDetected
+      sseResponse([sseData({ choices: [{ delta: { content: "done" } }] }), "data: [DONE]\n\n"]),
+    ];
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetchSequence(responses);
+    try {
+      const result = await runAgentLoop(
+        [{ role: "user", content: "go" }],
+        { apiKey: "sk-test", model: "deepseek-chat", tools, permissions: perms },
+      );
+      expect(result.finalText).toBe("done");
+      const toolMsgs = result.messages.filter((m) => m.role === "tool");
+      // One tool result per nope iteration; the 3rd carries the STOP guard.
+      expect(toolMsgs.length).toBe(3);
+      expect(toolMsgs[0]?.content).toContain("does not exist");
+      expect(toolMsgs[2]?.content).toContain("STOP");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
 });
+
