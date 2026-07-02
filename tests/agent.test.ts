@@ -403,5 +403,50 @@ describe("runAgentLoop", () => {
       globalThis.fetch = origFetch;
     }
   });
+
+  it("blocks only the abusive tool name, not other valid calls in the same turn", async () => {
+    // Per-name abuse guard: once "nope" is blocked after 3 hits, a valid
+    // echo call issued alongside it in the same iteration still executes —
+    // the turn isn't bricked by one bad name.
+    const tools = registryWith(echoTool);
+    const perms = new PermissionManager({ mode: "auto" });
+
+    const mkNope = (id: string) => sseData({
+      choices: [{ delta: { tool_calls: [{ index: 0, id, function: { name: "nope", arguments: "{}" } }] } }],
+    });
+    // Iteration 3 emits nope (3rd hit → blocked) AND a valid echo together.
+    const mkMixed = () => sseData({
+      choices: [{ delta: { tool_calls: [
+        { index: 0, id: "c3", function: { name: "nope", arguments: "{}" } },
+        { index: 1, id: "c4", function: { name: "echo", arguments: '{"msg":"hi"}' } },
+      ] } }],
+    });
+    const responses = [
+      sseResponse([mkNope("c1")]),                              // count=1
+      sseResponse([mkNope("c2")]),                              // count=2
+      sseResponse([mkMixed()]),                                // nope count=3 (blocked) + echo
+      sseResponse([sseData({ choices: [{ delta: { content: "done" } }] }), "data: [DONE]\n\n"]),
+    ];
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetchSequence(responses);
+    try {
+      const result = await runAgentLoop(
+        [{ role: "user", content: "go" }],
+        { apiKey: "sk-test", model: "deepseek-chat", tools, permissions: perms },
+      );
+      expect(result.finalText).toBe("done");
+      const toolMsgs = result.messages.filter((m) => m.role === "tool");
+      // The 3rd iteration produced TWO tool messages: nope (blocked/skip-or-STOP)
+      // and echo (actually executed → content "hi"). The echo result must be present.
+      const echoResult = toolMsgs.find((m) => typeof m.content === "string" && m.content === "hi");
+      expect(echoResult).toBeDefined();
+      // And the blocked nope is surfaced too.
+      const nopeBlock = toolMsgs.find((m) => typeof m.content === "string" && (m.content.includes("STOP") || m.content.includes("Skipped")));
+      expect(nopeBlock).toBeDefined();
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
 });
 

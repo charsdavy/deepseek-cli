@@ -85,22 +85,29 @@ export async function runAgentLoop(
   const EXPLORATION_HINT_THRESHOLD = 3;
   // Per-loop (cross-iteration) trackers for hallucinated tool names. A model
   // can fire the same bogus name once per iteration for many iterations
-  // (observed: "nope" × 43 across a single session); counting across iterations
-  // lets us short-circuit the whole turn, not just one iteration.
+  // (observed: "nope" × 43 across a single session). Counting across
+  // iterations lets us block that specific name for the rest of the turn
+  // WITHOUT bricking other, valid tool calls.
   const unknownCounts = new Map<string, number>();
-  let abuseDetected = false;
+  const abusiveNames = new Set<string>();
   const registeredNames = tools.list().map((t) => t.name).join(", ");
   // One-shot nudge when this conversation is already large: steer the model
   // toward context-economical tools so it doesn't keep bloating the thread.
   let contextNudgeShown = false;
   // Auto-downgrade reasoning effort during long read-only exploration runs
   // (max→high) so each tool-call iteration stops paying deepest-thinking
-  // overhead for pure grep/read work. Restored only by the user via /think.
+  // overhead for pure grep/read work. Restored back to max as soon as the
+  // model resumes writing code (edit/write/bash) — the downgrade is for
+  // exploration only, never the coding phase the user picked max for.
   let effectiveEffort = opts.reasoningEffort;
   let effortDowngraded = false;
   // One-shot "wrap up" nudge near the iteration cap so the turn ends with a
   // usable answer instead of running off the cliff with finalText empty.
   let wrapUpHintShown = false;
+  // Ephemeral system messages (context/wrap-up nudges) are injected for ONE
+  // iteration only; we remove them next iteration so they aren't re-sent to
+  // the API on every subsequent turn (avoids stale-instruction token bloat).
+  const ephemeralSystems: ChatMessage[] = [];
   log.info("agent loop start", { model: opts.model, reasoning: shouldReason, reasonEffort: opts.reasoningEffort, maxContext: opts.maxContext, messages: messagesIn.length, maxIterations });
 
   while (iterations < maxIterations) {
@@ -119,6 +126,19 @@ export async function runAgentLoop(
     // terminal shows a bare blinking cursor instead of an active indicator.
     spinner.start("thinking…");
 
+    // Strip last iteration's ephemeral system nudges so they're sent to the
+    // API exactly once, not re-sent every subsequent turn (stale-instruction
+    // bloat). They were pushed last iteration; remove them before this turn's
+    // trim/inject cycle. Safe with trimToFit, which only keeps them within a
+    // single iteration.
+    if (ephemeralSystems.length > 0) {
+      for (const m of ephemeralSystems) {
+        const idx = messages.lastIndexOf(m);
+        if (idx >= 0) messages.splice(idx, 1);
+      }
+      ephemeralSystems.length = 0;
+    }
+
     // Trim context if necessary
     const trimmed = trimToFit(messages, opts.maxContext);
     if (trimmed.droppedTurns > 0) {
@@ -136,11 +156,13 @@ export async function runAgentLoop(
     if (!contextNudgeShown && trimmed.tokensBefore > 50_000) {
       contextNudgeShown = true;
       log.info("context nudge shown", { tokensBefore: trimmed.tokensBefore });
-      messages.push({
+      const nudge: ChatMessage = {
         role: "system",
         content:
           "Context is large (>50k tokens). Prefer grep/glob to locate code over whole-file read_file; delegate self-contained investigations to the `task` sub-agent so their context stays out of this thread; do not re-read files already in context.",
-      });
+      };
+      messages.push(nudge);
+      ephemeralSystems.push(nudge);
     }
 
     // Wrap-up nudge: when the iteration budget is running low, steer the model
@@ -149,11 +171,13 @@ export async function runAgentLoop(
     if (!wrapUpHintShown && maxIterations - iterations <= 10) {
       wrapUpHintShown = true;
       log.info("wrap-up nudge shown", { iteration: iterations, remaining: maxIterations - iterations });
-      messages.push({
+      const nudge: ChatMessage = {
         role: "system",
         content:
           "The iteration budget is almost exhausted (~10 left). Wrap up now: finish only the in-flight edit, then produce a concrete final answer stating what was done and what remains for the next turn. Do not start new investigations or new files.",
-      });
+      };
+      messages.push(nudge);
+      ephemeralSystems.push(nudge);
       printSystem("approaching iteration cap — prompting the model to wrap up", "yellow");
     }
 
@@ -208,19 +232,11 @@ export async function runAgentLoop(
     } catch (e) {
       hadApiError = true;
       if (e instanceof DeepSeekUnauthorized) {
+        // 401 throws at the fetch stage (before any assistant message is
+        // pushed this iteration), so there is no dangling partial assistant
+        // to clean up here — the previous iteration always closed with tool
+        // messages. Just surface a clear re-auth prompt.
         log.error("api unauthorized", { status: e.status, note: "401 — check API key / baseUrl / proxy; if intermittent, the key may be rate-limited or region-locked" });
-        // Defense: a 401 mid-stream can leave a partial assistant message
-        // (with tool_calls whose results never landed). Drop any trailing
-        // assistant message that carries tool_calls but no matching tool
-        // results, so the next turn doesn't resend a broken history that
-        // triggers 400/loops.
-        if (messages.length > 0) {
-          const last = messages[messages.length - 1];
-          if (last.role === "assistant" && last.tool_calls && last.tool_calls.length > 0) {
-            messages.pop();
-            log.info("dropped dangling assistant message after 401", { toolCalls: last.tool_calls.length });
-          }
-        }
         printError(`${e.message} If this keeps happening intermittently, the key may be rate-limited or the baseUrl/proxy may be rejecting some requests. Run \`deepseek auth\` to reconfigure.`);
         throw e;
       }
@@ -282,7 +298,7 @@ export async function runAgentLoop(
       args: Record<string, unknown>;
     }
     const pending: PendingTask[] = [];
-    // unknownCounts / abuseDetected / registeredNames are declared at loop
+    // unknownCounts / abusiveNames / registeredNames are declared at loop
     // scope (above the while) so the hallucination guard accumulates across
     // iterations, not just within one.
 
@@ -298,11 +314,12 @@ export async function runAgentLoop(
         continue;
       }
 
-      // Once abuse is detected, skip every remaining tool call in this turn
-      // (still push a tool message per slot so tool_call/message counts stay
-      // consistent for the next API request — a mismatch causes a 400).
-      if (abuseDetected) {
-        messages.push({ role: "tool", tool_call_id: tc.id, content: "Skipped — turn aborted due to repeated unknown-tool calls." });
+      // A tool name blocked earlier this turn after repeated unknown-tool
+      // calls. Skip just this call (still push a tool message so the
+      // tool_call/message counts stay consistent — a mismatch causes a 400)
+      // but let the model's OTHER tool calls through.
+      if (abusiveNames.has(tc.name)) {
+        messages.push({ role: "tool", tool_call_id: tc.id, content: `Skipped — '${tc.name}' is blocked for the rest of this turn after repeated unknown-tool calls.` });
         continue;
       }
 
@@ -311,12 +328,12 @@ export async function runAgentLoop(
         const c = (unknownCounts.get(tc.name) ?? 0) + 1;
         unknownCounts.set(tc.name, c);
         if (c >= 3) {
-          abuseDetected = true;
+          abusiveNames.add(tc.name);
           log.warn("unknown tool abuse", { name: tc.name, count: c, iteration: iterations });
           messages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: `STOP: '${tc.name}' is not a registered tool — you have called it ${c} times this turn. This is a dead loop. Choose ONLY from: ${registeredNames}. If none applies, answer in plain text with no tool call. The remaining tool calls this turn are skipped.`,
+            content: `STOP: '${tc.name}' is not a registered tool — you have called it ${c} times this turn. It is now blocked for the rest of this turn. Choose ONLY from: ${registeredNames}. If none applies, answer in plain text with no tool call. Other valid tool calls will still run.`,
           });
         } else {
           messages.push({
@@ -396,8 +413,20 @@ export async function runAgentLoop(
         .map((p) => tools.get(p.name)?.category ?? "memory")
         .filter((c): c is "fs-read" | "git" | "network" => c === "fs-read" || c === "git" || c === "network");
       const allReadOnly = cats.length === pending.length;
-      if (allReadOnly) readOnlyStreak++;
-      else readOnlyStreak = 0;
+      if (allReadOnly) {
+        readOnlyStreak++;
+      } else {
+        readOnlyStreak = 0;
+        // The model left exploration and is now writing code (edit/write/bash).
+        // Restore the user's configured effort — the max→high downgrade was
+        // only meant for the read-only exploration phase, not the coding phase
+        // the user picked `max` for in the first place.
+        if (effortDowngraded) {
+          effectiveEffort = opts.reasoningEffort;
+          effortDowngraded = false;
+          log.info("effort auto-restored", { to: effectiveEffort ?? "default", iteration: iterations });
+        }
+      }
       if (
         !explorationHintShown &&
         shouldReason &&
@@ -407,7 +436,7 @@ export async function runAgentLoop(
         log.info("exploration hint shown", { iteration: iterations, streak: readOnlyStreak });
         // Auto-downgrade deepest thinking during exploration: max→high trims
         // seconds off every subsequent read-only iteration without hurting
-        // accuracy for grep/read/list tasks. The user restores max via /think.
+        // accuracy for grep/read/list tasks. Restored when writing resumes.
         if (effectiveEffort === "max" && !effortDowngraded) {
           effortDowngraded = true;
           effectiveEffort = "high";
@@ -417,7 +446,7 @@ export async function runAgentLoop(
         printTip(
           `${readOnlyStreak} consecutive read-only iterations under a reasoning model — ` +
           `running /fast switches to deepseek-chat (much snappier exploration); /think switches back when writing code.` +
-          (effortDowngraded ? " Thinking effort auto-lowered max→high for this turn." : ""),
+          (effortDowngraded ? " Thinking effort auto-lowered max→high for exploration; restores when you write code." : ""),
         );
       }
     }

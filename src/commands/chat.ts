@@ -1617,6 +1617,11 @@ export async function expandFileRefs(text: string, cwd: string): Promise<string>
       blocks.push(tag("file", { path: raw, error: "not_found" }, "Not found."));
     }
   }
+  // A block is "useful" if it told the model something actionable. not_found
+  // and not_a_file are dead ends (the path simply isn't usable) so they don't
+  // count. too_large IS kept useful on purpose: it tells the model the file
+  // exists and is big, so it can fall back to read_file offset/limit or grep —
+  // attaching that beats silently dropping the reference.
   const anyUseful = blocks.some((b) => !b.includes('error="not_found"') && !b.includes('error="not_a_file"'));
   if (attached === 0 && !anyUseful) {
     return text; // nothing useful to attach; leave prompt untouched
