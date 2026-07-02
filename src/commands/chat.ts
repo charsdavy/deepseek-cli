@@ -443,7 +443,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
         await driveTurn(session, {
           apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
           tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
-          promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant,
+          promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system, projectInstructions: instructions, activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
         });
       }
       await saveSession(session);
@@ -534,7 +534,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
               await driveTurn(session, {
                 apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
                 tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
-                promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant,
+                promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system, projectInstructions: instructions, activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
               });
               await saveSession(session);
             } catch (e) {
@@ -562,7 +562,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
             await driveTurn(session, {
               apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
               tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
-              promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant,
+              promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system, projectInstructions: instructions, activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
             });
             await saveSession(session);
           } catch (e) {
@@ -589,7 +589,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
         await driveTurn(session, {
           apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
           tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
-          promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant,
+          promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system, projectInstructions: instructions, activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
         });
         await saveSession(session);
       } catch (e) {
@@ -631,6 +631,10 @@ interface TurnDeps {
   promptLog?: { get: () => boolean };
   /** System-prompt variant tag to stamp on log entries. */
   promptVariant?: string;
+  /** For auto-model system-prompt rebuild. */
+  userSystemPrompt?: string;
+  projectInstructions?: string | null;
+  activeSkills?: { name: string; content: string }[];
 }
 
 async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
@@ -644,6 +648,19 @@ async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
     model = resolved.model;
     reasoning = resolved.reasoning;
     printSystem(`auto → ${model}${reasoning ? " (reasoning)" : ""}`, "cyan");
+    // Rebuild the system prompt so the reasoning addendum reflects the
+    // resolved model (not the session-level "auto" which has reasoning off).
+    const resolvedInfo = findModel(model);
+    const rebuilt = buildSystemPrompt({
+      cwd: session.cwd,
+      modelInfo: resolvedInfo,
+      isReasoning: reasoning,
+      userSystemPrompt: deps.userSystemPrompt,
+      projectInstructions: deps.projectInstructions,
+      activeSkills: deps.activeSkills,
+    });
+    session.promptVariant = rebuilt.variant;
+    ensureSystemPrefix(session.messages, rebuilt.text);
   }
   const renderer = makeStreamRenderer({ showReasoning: reasoning === true, model });
   const turnStart = performance.now();
@@ -852,12 +869,24 @@ interface JsonOneShotDeps {
 
 export async function runJsonOneShot(session: Session, deps: JsonOneShotDeps): Promise<void> {
   setOutputSilent(true);
+  // Resolve "auto" model — runJsonOneShot calls runAgentLoop directly,
+  // bypassing driveTurn's auto resolution. Without this, "auto" would be
+  // sent to the API as a model ID and cause an error.
+  let model = deps.model;
+  let reasoning = deps.reasoning;
+  if (model === "auto") {
+    const lastUser = [...session.messages].reverse().find((m) => m.role === "user");
+    const promptText = typeof lastUser?.content === "string" ? lastUser.content : "";
+    const resolved = resolveAutoModel(promptText);
+    model = resolved.model;
+    reasoning = resolved.reasoning;
+  }
   let result;
   try {
     result = await runAgentLoop(session.messages, {
       apiKey: deps.apiKey,
-      model: deps.model,
-      reasoning: deps.reasoning,
+      model,
+      reasoning,
       reasoningEffort: deps.reasoningEffort,
       maxContext: deps.maxContext,
       temperature: deps.temperature,
