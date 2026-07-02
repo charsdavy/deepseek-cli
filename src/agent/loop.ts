@@ -422,14 +422,27 @@ export async function runAgentLoop(
       }
     }
 
+    const iterMs = Math.round(performance.now() - iterStart);
     log.debug("iteration done", {
       iteration: iterations,
-      iterMs: Math.round(performance.now() - iterStart),
+      iterMs,
       contentLen: acc.content.length,
       reasoningLen: acc.reasoning.length,
       toolCalls: acc.toolCalls.length,
       readOnlyStreak,
     });
+    // Flag suspiciously slow iterations (>5min). Observed in production: a
+    // single iteration can spend 55min stuck on a hung API stream; this
+    // makes such outliers jump out in `tail -f` instead of hiding in debug.
+    if (iterMs > 300_000) {
+      log.warn("suspicious slow iteration", {
+        iteration: iterations,
+        iterMs,
+        contentLen: acc.content.length,
+        reasoningLen: acc.reasoning.length,
+        toolCalls: acc.toolCalls.length,
+      });
+    }
   }
 
   if (iterations >= maxIterations) {
