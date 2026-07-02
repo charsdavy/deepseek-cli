@@ -63,6 +63,20 @@ export function renderMarkdown(src: string): string {
       continue;
     }
 
+    // Markdown table: header row | separator row | data rows
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      const tableLines: string[] = [line];
+      i++; // consume header
+      tableLines.push(lines[i]); // consume separator
+      i++;
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        tableLines.push(lines[i]);
+        i++;
+      }
+      out.push(renderTable(tableLines));
+      continue;
+    }
+
     // Headings
     const h = line.match(/^(#{1,6})\s+(.*)$/);
     if (h) {
@@ -193,6 +207,9 @@ function termWidth(): number {
 
 export class StreamMarkdown {
   private inFence = false;
+  private pendingTableHeader: string | null = null;
+  private tableWidths: number[] = [];
+  private inTable = false;
 
   /** Render a single complete line (no trailing newline). Returns the
    *  formatted string; the caller is responsible for writing it. */
@@ -212,6 +229,84 @@ export class StreamMarkdown {
       const header = lang ? paint.gray(`┌ ${lang} `) : paint.gray("┌ ");
       return header + paint.dim("─".repeat(Math.max(1, termWidth() - headerVisible(header) - 1)));
     }
+
+    // ---- Table handling (streaming) ----
+    // A markdown table starts with a header row (|...|...|) followed by a
+    // separator row (|---|---|). Since lines arrive one at a time, we buffer
+    // the header until the separator confirms it's a table.
+    const isTableRow = /^\s*\|.*\|\s*$/.test(line);
+
+    // Non-table line: close any open table state first.
+    if (!isTableRow) {
+      let prefix = "";
+      if (this.inTable) {
+        this.inTable = false;
+        prefix += this.tableBorder("└", "┴", "┘") + "\n";
+      }
+      if (this.pendingTableHeader) {
+        const pending = this.pendingTableHeader;
+        this.pendingTableHeader = null;
+        prefix += this.renderRegular(pending) + "\n";
+      }
+      return prefix + this.renderRegular(line);
+    }
+
+    // It IS a table row.
+    // Case 1: separator row → confirms a pending header is a real table.
+    if (isTableSeparator(line)) {
+      if (this.pendingTableHeader) {
+        // Parse column widths from separator + header content.
+        const sepCells = parseTableRow(line);
+        const headerCells = parseTableRow(this.pendingTableHeader);
+        this.tableWidths = sepCells.map((sep, j) => {
+          const dashLen = sep.replace(/^:?/, "").replace(/:?$/, "").length;
+          const hdrW = headerCells[j] ? visWidth(headerCells[j]) : 0;
+          return Math.max(dashLen, hdrW, 3);
+        });
+        // Render: top border + header row + mid border (all in one return).
+        const out = [
+          this.tableBorder("┌", "┬", "┐"),
+          this.renderTableRow(headerCells, true),
+          this.tableBorder("├", "┼", "┤"),
+        ].join("\n");
+        this.pendingTableHeader = null;
+        this.inTable = true;
+        return out;
+      }
+      // Separator without a pending header — skip (malformed table).
+      return "";
+    }
+
+    // Case 2: data row while in a table.
+    if (this.inTable) {
+      const cells = parseTableRow(line);
+      // Grow widths if a data cell is wider than the initial header-based guess.
+      cells.forEach((cell, j) => {
+        if (j < this.tableWidths.length) {
+          this.tableWidths[j] = Math.max(this.tableWidths[j], visWidth(cell));
+        }
+      });
+      return this.renderTableRow(cells, false);
+    }
+
+    // Case 3: potential header row — buffer it, wait for separator.
+    if (!this.pendingTableHeader) {
+      this.pendingTableHeader = line;
+      return ""; // empty — the header will be rendered when the separator arrives
+    }
+
+    // Case 4: another table-like row, but no separator seen yet.
+    // The pending line wasn't a table header after all. Flush it, then
+    // treat the current line as a new potential header.
+    const pending = this.pendingTableHeader;
+    this.pendingTableHeader = null;
+    const flushed = this.renderRegular(pending);
+    this.pendingTableHeader = line;
+    return flushed;
+  }
+
+  /** Render all non-table, non-fence line types. */
+  private renderRegular(line: string): string {
     // Horizontal rule
     if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
       return paint.dim("─".repeat(termWidth()));
@@ -246,8 +341,25 @@ export class StreamMarkdown {
     return inline(line);
   }
 
+  /** Render one table row with │ borders and cell padding. */
+  private renderTableRow(cells: string[], isHeader: boolean): string {
+    const parts = cells.map((cell, j) => {
+      const w = this.tableWidths[j] ?? Math.max(visWidth(cell), 3);
+      const content = isHeader ? paint.bold(inline(cell)) : inline(cell);
+      const pad = " ".repeat(Math.max(0, w - visWidth(content)));
+      return ` ${content}${pad} `;
+    });
+    return `${paint.gray("│")}${parts.join(paint.gray("│"))}${paint.gray("│")}`;
+  }
+
+  /** Render a horizontal table border (┌┬┐ / ├┼┤ / └┴┘). */
+  private tableBorder(l: string, m: string, r: string): string {
+    const segments = this.tableWidths.map((w) => paint.gray("─".repeat(w + 2)));
+    return `${paint.gray(l)}${segments.join(paint.gray(m))}${paint.gray(r)}`;
+  }
+
   /** Render the last partial line (no trailing newline). Same as renderLine
-   *  but guaranteed to be the final flush. Also closes an unclosed fence. */
+   *  but guaranteed to be the final flush. Also closes an unclosed fence/table. */
   flush(remaining: string): string {
     let out = "";
     if (remaining) {
@@ -256,6 +368,17 @@ export class StreamMarkdown {
     // Close an unclosed fence at end of stream.
     if (this.inFence) {
       this.inFence = false;
+    }
+    // Close an unclosed table.
+    if (this.inTable) {
+      this.inTable = false;
+      out += (out ? "\n" : "") + this.tableBorder("└", "┴", "┘");
+    }
+    // Flush a pending (unconfirmed) table header as a regular line.
+    if (this.pendingTableHeader) {
+      const pending = this.pendingTableHeader;
+      this.pendingTableHeader = null;
+      out += (out ? "\n" : "") + this.renderRegular(pending);
     }
     return out;
   }
@@ -268,6 +391,86 @@ export class StreamMarkdown {
 
 function headerVisible(s: string): number {
   return s.replace(/\x1b\[[0-9;]*m/g, "").length;
+}
+
+/** Visible width of a string (ANSI stripped; emoji/CJK = 2, else 1). */
+function visWidth(s: string): number {
+  const stripped = s.replace(/\x1b\[[0-9;]*m/g, "");
+  let w = 0;
+  for (const ch of stripped) {
+    const c = ch.codePointAt(0) ?? 0;
+    if (c < 0x20) continue;
+    w += isWideChar(c) ? 2 : 1;
+  }
+  return w;
+}
+
+/** True for codepoints that occupy two terminal columns (CJK / emoji / fullwidth). */
+function isWideChar(c: number): boolean {
+  if (c >= 0x1F000 || (c >= 0x2600 && c <= 0x27BF)) return true;
+  if (c >= 0x2000 && c < 0x2E80) return false;
+  return (
+    (c >= 0x1100 && c < 0x2000) ||
+    (c >= 0x2E80 && c <= 0xA4CF) ||
+    (c >= 0xAC00 && c <= 0xD7A3) ||
+    (c >= 0xF900 && c <= 0xFAFF) ||
+    (c >= 0xFE30 && c <= 0xFE4F) ||
+    (c >= 0xFF00 && c <= 0xFFE6)
+  );
+}
+
+// ---- Table rendering ----
+
+/** Parse a markdown table row into cell contents (without leading/trailing pipes). */
+function parseTableRow(line: string): string[] {
+  return line.split("|").slice(1, -1).map((c) => c.trim());
+}
+
+/** True if a line looks like a table separator row: |---|:--:|--:| */
+function isTableSeparator(line: string): boolean {
+  const cells = parseTableRow(line);
+  return cells.length > 0 && cells.every((c) => /^:?-{1,}:?$/.test(c));
+}
+
+/** Render a complete table (header + separator + data rows) as a bordered block. */
+function renderTable(rows: string[]): string {
+  if (rows.length < 2) return rows.map((r) => inline(r)).join("\n");
+  const headerCells = parseTableRow(rows[0]);
+  const sepCells = parseTableRow(rows[1]);
+  const dataRows = rows.slice(2).map(parseTableRow);
+
+  // Column widths: max of separator dashes, header content, and data content.
+  const widths = sepCells.map((sep, j) => {
+    const dashLen = sep.replace(/^:?/, "").replace(/:?$/, "").length;
+    const hdrW = headerCells[j] ? visWidth(headerCells[j]) : 0;
+    return Math.max(dashLen, hdrW, 3);
+  });
+  for (const cells of dataRows) {
+    cells.forEach((cell, j) => {
+      if (j < widths.length) widths[j] = Math.max(widths[j], visWidth(cell));
+    });
+  }
+
+  const border = (l: string, m: string, r: string): string => {
+    const segments = widths.map((w) => paint.gray("─".repeat(w + 2)));
+    return `${paint.gray(l)}${segments.join(paint.gray(m))}${paint.gray(r)}`;
+  };
+  const renderRow = (cells: string[], isHeader: boolean): string => {
+    const parts = cells.map((cell, j) => {
+      const w = widths[j] ?? Math.max(visWidth(cell), 3);
+      const content = isHeader ? paint.bold(inline(cell)) : inline(cell);
+      const pad = " ".repeat(Math.max(0, w - visWidth(content)));
+      return ` ${content}${pad} `;
+    });
+    return `${paint.gray("│")}${parts.join(paint.gray("│"))}${paint.gray("│")}`;
+  };
+
+  const out = [border("┌", "┬", "┐"), renderRow(headerCells, true), border("├", "┼", "┤")];
+  for (const cells of dataRows) {
+    out.push(renderRow(cells, false));
+  }
+  out.push(border("└", "┴", "┘"));
+  return out.join("\n");
 }
 
 function truncateLine(s: string, max: number): string {

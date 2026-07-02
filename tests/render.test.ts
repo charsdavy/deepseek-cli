@@ -139,4 +139,95 @@ describe("StreamMarkdown", () => {
     const out = md.renderLine("---");
     expect(out).toContain("─");
   });
+
+  // ---- Markdown table rendering (streaming) ----
+
+  it("renders a table with bordered layout", () => {
+    const md = new StreamMarkdown();
+    // Header row — buffered, returns empty until separator arrives.
+    const r1 = md.renderLine("| 文件 | 改动 |");
+    expect(r1).toBe("");
+    // Separator — triggers header + borders render.
+    const r2 = md.renderLine("|------|------|");
+    expect(r2).toContain("┌");
+    expect(r2).toContain("┬");
+    expect(r2).toContain("┐");
+    expect(r2).toContain("文件");
+    expect(r2).toContain("改动");
+    expect(r2).toContain("├");
+    expect(r2).toContain("┼");
+    expect(r2).toContain("┤");
+    // Data row.
+    const r3 = md.renderLine("| a.swift | fix bug |");
+    expect(r3).toContain("│");
+    expect(r3).toContain("a.swift");
+    expect(r3).toContain("fix bug");
+    // Non-table line → closes the table with a bottom border.
+    const r4 = md.renderLine("done");
+    expect(r4).toContain("└");
+    expect(r4).toContain("┴");
+    expect(r4).toContain("┘");
+    expect(r4).toContain("done");
+  });
+
+  it("buffers header until separator confirms table", () => {
+    const md = new StreamMarkdown();
+    // Header comes in — no separator yet, so nothing rendered.
+    expect(md.renderLine("| H1 | H2 |")).toBe("");
+    // Separator confirms it's a table.
+    const sep = md.renderLine("|--|--|");
+    expect(sep).toContain("┌");
+    expect(sep).toContain("H1");
+    expect(sep).toContain("H2");
+  });
+
+  it("flushes a pending header as regular text if no separator follows", () => {
+    const md = new StreamMarkdown();
+    md.renderLine("| not a table | maybe |");
+    // Flush without a separator — should be output as regular inline text.
+    const out = md.flush("");
+    expect(out).toContain("not a table");
+    expect(out).not.toContain("┌");
+  });
+
+  it("renders a table via renderMarkdown (non-streaming)", () => {
+    const src = "| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 25 |";
+    const out = renderMarkdown(src);
+    expect(out).toContain("┌");
+    expect(out).toContain("┬");
+    expect(out).toContain("┐");
+    expect(out).toContain("Name");
+    expect(out).toContain("Age");
+    expect(out).toContain("Alice");
+    expect(out).toContain("Bob");
+    expect(out).toContain("├");
+    expect(out).toContain("┼");
+    expect(out).toContain("┤");
+    expect(out).toContain("└");
+    expect(out).toContain("┴");
+    expect(out).toContain("┘");
+  });
+
+  it("handles CJK table cells with double-width alignment", () => {
+    const md = new StreamMarkdown();
+    md.renderLine("| 文件 | 改动 |");
+    md.renderLine("|------|------|");
+    const dataRow = md.renderLine("| A.swift | 修复 |");
+    // Both cells should be present.
+    expect(dataRow).toContain("A.swift");
+    expect(dataRow).toContain("修复");
+    md.renderLine(""); // close table
+  });
+
+  it("closes an unclosed table on flush", () => {
+    const md = new StreamMarkdown();
+    md.renderLine("| H1 | H2 |");
+    md.renderLine("|----|----|");
+    md.renderLine("| d1 | d2 |");
+    // Flush without a closing non-table line.
+    const out = md.flush("");
+    expect(out).toContain("└");
+    expect(out).toContain("┴");
+    expect(out).toContain("┘");
+  });
 });
