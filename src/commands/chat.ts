@@ -9,7 +9,8 @@ import { DEFAULT_MODEL, findModel, isReasoningModel, MODELS, resolveAutoModel, S
 import { estimateConversationTokens } from "../api/tokens.ts";
 import { ensureDirs, getOrSetupApiKey, loadConfig, saveConfig } from "../config/config.ts";
 import { loadProjectInstructions } from "../config/instructions.ts";
-import { buildSystemPrompt } from "../prompt/builder.ts";
+import { buildSystemPrompt, SUBAGENT_SYSTEM_PROMPT } from "../prompt/builder.ts";
+import { tag } from "../prompt/harness.ts";
 import { makeStreamRenderer, runAgentLoop } from "../agent/loop.ts";
 import { PermissionManager } from "../agent/permissions.ts";
 import { ToolRegistry } from "../tools/registry.ts";
@@ -195,8 +196,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
       const subMessages: ChatMessage[] = [
         {
           role: "system",
-          content:
-            "You are a focused DeepSeek sub-agent. Complete the assigned subtask with the available tools, then return ONLY the final result — no preamble, no follow-up questions.",
+          content: SUBAGENT_SYSTEM_PROMPT,
         },
         { role: "user", content: prompt },
       ];
@@ -219,7 +219,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
       // them instead of re-reading the same files in a follow-up turn.
       const filesAccessed = extractReadFilePaths(r.messages);
       if (filesAccessed.length > 0) {
-        return `${r.finalText}\n\n<files_accessed>\n${filesAccessed.join("\n")}\n</files_accessed>`;
+        return `${r.finalText}\n\n${tag("files_accessed", {}, filesAccessed.join("\n"))}`;
       }
       return r.finalText;
     } finally {
@@ -1594,25 +1594,25 @@ export async function expandFileRefs(text: string, cwd: string): Promise<string>
     try {
       const st = await fs.stat(p);
       if (!st.isFile()) {
-        blocks.push(`<file path="${raw}">(not a file — use list_dir/glob to inspect)`);
+        blocks.push(tag("file", { path: raw, error: "not_a_file" }, "Not a file — use list_dir/glob to inspect."));
         continue;
       }
       if (st.size > 200_000) {
-        blocks.push(`<file path="${raw}">(file too large: ${st.size} bytes — use read_file with offset/limit)`);
+        blocks.push(tag("file", { path: raw, error: "too_large" }, `File too large: ${st.size} bytes — use read_file with offset/limit.`));
         continue;
       }
       const content = await fs.readFile(p, "utf-8");
-      blocks.push(`<file path="${raw}">\n${content}\n</file>`);
+      blocks.push(tag("file", { path: raw }, content));
       attached++;
     } catch {
-      blocks.push(`<file path="${raw}">(not found)`);
+      blocks.push(tag("file", { path: raw, error: "not_found" }, "Not found."));
     }
   }
-  const anyUseful = blocks.some((b) => !b.includes("(not found)") && !b.includes("(not a file"));
+  const anyUseful = blocks.some((b) => !b.includes('error="not_found"') && !b.includes('error="not_a_file"'));
   if (attached === 0 && !anyUseful) {
     return text; // nothing useful to attach; leave prompt untouched
   }
-  return `${text}\n\n<referenced_files>\n${blocks.join("\n")}\n</referenced_files>`;
+  return `${text}\n\n${tag("referenced_files", {}, blocks.join("\n"))}`;
 }
 
 function lastUserIndex(messages: ChatMessage[]): number {

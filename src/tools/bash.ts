@@ -3,8 +3,11 @@
 import { spawn } from "node:child_process";
 import * as path from "node:path";
 import type { Tool, ToolResult } from "./types.ts";
+import { tag, trunc } from "../prompt/harness.ts";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+const STDOUT_CAP = 512_000;
+const STDERR_CAP = 256_000;
 
 export const bashTool: Tool = {
   name: "bash",
@@ -46,19 +49,25 @@ export const bashTool: Tool = {
     const cwd = workdir ? (path.isAbsolute(workdir) ? workdir : path.resolve(process.cwd(), workdir)) : process.cwd();
 
     try {
-      const { stdout, stderr, code, durationMs, timedOut } = await runShell(command, cwd, timeout);
+      const { stdout, stderr, code, durationMs, timedOut, stdoutOmitted, stderrOmitted } = await runShell(command, cwd, timeout);
       const parts: string[] = [];
       parts.push(`$ ${command}`);
       parts.push(`(cwd: ${cwd})`);
-      if (stdout) parts.push(`stdout:\n${stdout}`);
-      if (stderr) parts.push(`stderr:\n${stderr}`);
+      if (stdout) {
+        parts.push(`stdout:\n${stdout}`);
+        if (stdoutOmitted > 0) parts.push(trunc(stdoutOmitted, "chars (tail kept)"));
+      }
+      if (stderr) {
+        parts.push(`stderr:\n${stderr}`);
+        if (stderrOmitted > 0) parts.push(trunc(stderrOmitted, "chars (tail kept)"));
+      }
       if (timedOut) {
         parts.push(`(timed out after ${timeout}ms)`);
       }
       parts.push(`(exit ${code}, ${durationMs}ms)`);
       return {
         ok: code === 0,
-        content: parts.join("\n"),
+        content: tag("bash", { command, exit: code }, parts.join("\n")),
         uiSummary: `bash: ${truncate(command, 60)} → exit ${code}`,
       };
     } catch (e) {
@@ -71,6 +80,8 @@ export const bashTool: Tool = {
 interface ShellResult {
   stdout: string;
   stderr: string;
+  stdoutOmitted: number;
+  stderrOmitted: number;
   code: number;
   durationMs: number;
   timedOut: boolean;
@@ -87,15 +98,23 @@ function runShell(command: string, cwd: string, timeoutMs: number): Promise<Shel
 
     let stdout = "";
     let stderr = "";
+    let stdoutOmitted = 0;
+    let stderrOmitted = 0;
     let timedOut = false;
 
     child.stdout?.on("data", (d: Buffer) => {
       stdout += d.toString("utf-8");
-      if (stdout.length > 512_000) stdout = stdout.slice(-512_000);
+      if (stdout.length > STDOUT_CAP) {
+        stdoutOmitted += stdout.length - STDOUT_CAP;
+        stdout = stdout.slice(-STDOUT_CAP);
+      }
     });
     child.stderr?.on("data", (d: Buffer) => {
       stderr += d.toString("utf-8");
-      if (stderr.length > 256_000) stderr = stderr.slice(-256_000);
+      if (stderr.length > STDERR_CAP) {
+        stderrOmitted += stderr.length - STDERR_CAP;
+        stderr = stderr.slice(-STDERR_CAP);
+      }
     });
 
     const timer = setTimeout(() => {
@@ -108,6 +127,8 @@ function runShell(command: string, cwd: string, timeoutMs: number): Promise<Shel
       resolve({
         stdout: stdout.trim(),
         stderr: stderr.trim(),
+        stdoutOmitted,
+        stderrOmitted,
         code: code ?? -1,
         durationMs: Date.now() - start,
         timedOut,
@@ -118,6 +139,8 @@ function runShell(command: string, cwd: string, timeoutMs: number): Promise<Shel
       resolve({
         stdout: stdout.trim(),
         stderr: stderr.trim(),
+        stdoutOmitted,
+        stderrOmitted,
         code: -1,
         durationMs: Date.now() - start,
         timedOut,

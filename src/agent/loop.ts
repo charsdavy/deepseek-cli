@@ -7,6 +7,7 @@ import { DeepSeekError, DeepSeekUnauthorized, streamChatCompletion, withRetry } 
 import { isReasoningModel } from "../api/models.ts";
 import { estimateConversationTokens } from "../api/tokens.ts";
 import { trimToFit } from "./context.ts";
+import { trunc } from "../prompt/harness.ts";
 import type { PermissionManager } from "./permissions.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
 import type { ToolContext, ToolResult } from "../tools/types.ts";
@@ -395,10 +396,7 @@ const MAX_TOOL_RESULT_CHARS = 25_000;
 function capToolResult(content: string, toolName: string): string {
   if (content.length <= MAX_TOOL_RESULT_CHARS) return content;
   const head = content.slice(0, MAX_TOOL_RESULT_CHARS);
-  return (
-    head +
-    `\n\n…(output truncated at ${MAX_TOOL_RESULT_CHARS} chars; ${content.length - MAX_TOOL_RESULT_CHARS} more omitted from ${toolName})`
-  );
+  return head + trunc(content.length - MAX_TOOL_RESULT_CHARS, "chars") + ` (from ${toolName})`;
 }
 
 // Streaming render helper for the chat command — wraps the loop with stdout.

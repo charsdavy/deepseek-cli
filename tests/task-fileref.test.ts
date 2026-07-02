@@ -50,7 +50,10 @@ describe("task tool (sub-agent)", () => {
       { cwd: tmp, spawnAgent: async () => "42" },
     );
     expect(r.ok).toBe(true);
-    expect(r.content).toBe("42");
+    // Result is wrapped in a <subtask> harness envelope; the sub-agent's
+    // final text lives inside it.
+    expect(r.content).toContain("42");
+    expect(r.content).toContain("<subtask");
     expect(r.uiSummary).toContain("sub-agent");
   });
 
@@ -91,8 +94,8 @@ describe("task tool (sub-agent)", () => {
       taskTool.execute({ prompt: "yo" }, ctx),
     ]);
     const elapsed = Date.now() - t0;
-    expect(a.content).toBe("HI");
-    expect(b.content).toBe("YO");
+    expect(a.content).toContain("HI");
+    expect(b.content).toContain("YO");
     expect(started).toBe(2);
     // two 30ms runs in parallel should be well under 50ms; sequential would be ~60ms.
     expect(elapsed).toBeLessThan(55);

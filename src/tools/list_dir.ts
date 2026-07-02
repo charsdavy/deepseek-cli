@@ -7,6 +7,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Tool, ToolResult } from "./types.ts";
+import { tag, trunc } from "../prompt/harness.ts";
 
 const MAX_ENTRIES = 1000;
 
@@ -50,12 +51,14 @@ export const listDirTool: Tool = {
     entries.sort((a, b) => a.name.localeCompare(b.name));
     const capped = entries.slice(0, MAX_ENTRIES);
     const rows = capped.map((e) => (e.isDirectory() ? `${e.name}/` : e.name));
-    const header = `${resolved} (${entries.length} entries${entries.length > MAX_ENTRIES ? `, showing first ${MAX_ENTRIES}` : ""})`;
+    const total = entries.length;
+    const omitted = total - capped.length;
     const body = rows.length > 0 ? rows.join("\n") : "(empty directory)";
+    const note = omitted > 0 ? `\n${trunc(omitted, "entries")}` : "";
     return {
       ok: true,
-      content: `${header}\n${body}`,
-      uiSummary: `list_dir: ${resolved.split(path.sep).pop()} · ${entries.length} entries`,
+      content: tag("dir", { path: resolved }, `${total} entries${omitted > 0 ? `, showing first ${MAX_ENTRIES}` : ""}\n${body}${note}`),
+      uiSummary: `list_dir: ${resolved.split(path.sep).pop()} · ${total} entries`,
     };
   },
 };

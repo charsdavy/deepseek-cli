@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Tool, ToolResult } from "./types.ts";
-import { paint } from "../ui/theme.ts";
+import { bullet, tag, trunc } from "../prompt/harness.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -53,6 +53,20 @@ export const grepTool: Tool = {
   },
 };
 
+/** Wrap a grep result body in the standardized envelope. */
+function wrapGrep(pattern: string, cwd: string, matches: string[]): ToolResult {
+  const capped = matches.slice(0, 200);
+  const omitted = matches.length - capped.length;
+  const body = capped.length === 0 ? "(no matches)" : capped.map((l) => bullet(l)).join("\n");
+  const note = omitted > 0 ? `\n${trunc(omitted, "matches")}` : "";
+  const header = `Found ${matches.length} match${matches.length === 1 ? "" : "es"}`;
+  return {
+    ok: true,
+    content: tag("grep", { pattern, path: cwd }, `${header}\n${body}${note}`),
+    uiSummary: `grep ${pattern} (${matches.length} matches)`,
+  };
+}
+
 async function hasRg(): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
     execFile("rg", ["--version"], (err) => resolve(!err));
@@ -73,18 +87,12 @@ async function runRg(pattern: string, cwd: string, include?: string): Promise<To
                   // execFile) and blocks forever when no path is given.
   try {
     const { stdout } = await execFileAsync("rg", args, { cwd, maxBuffer: 5_000_000, timeout: 30_000 });
-    const lines = stdout.split("\n").filter(Boolean).slice(0, 200);
-    return {
-      ok: true,
-      content: lines.length === 0
-        ? "(no matches)"
-        : lines.map((l) => paint.gray("•") + " " + l).join("\n"),
-      uiSummary: `grep ${pattern} (${lines.length} matches)`,
-    };
+    const lines = stdout.split("\n").filter(Boolean);
+    return wrapGrep(pattern, cwd, lines);
   } catch (e: unknown) {
     const err = e as { code?: number; stderr?: string; signal?: string };
     if (err.code === 1) {
-      return { ok: true, content: "(no matches)", uiSummary: `grep ${pattern} (0 matches)` };
+      return { ok: true, content: tag("grep", { pattern, path: cwd }, "(no matches)"), uiSummary: `grep ${pattern} (0 matches)` };
     }
     return null;
   }
@@ -155,14 +163,7 @@ async function runNodeGrep(pattern: string, cwd: string, include?: string): Prom
     }
   }
 
-  const rendered = matches.length === 0
-    ? "(no matches)"
-    : matches.map((l) => `${paint.gray("•")} ${l}`).join("\n");
-  return {
-    ok: true,
-    content: `Found ${matches.length} match${matches.length === 1 ? "" : "es"}.\n${rendered}`,
-    uiSummary: `grep ${pattern} (${matches.length} matches)`,
-  };
+  return wrapGrep(pattern, cwd, matches);
 }
 
 function matchGlobSimple(name: string, pat: string): boolean {

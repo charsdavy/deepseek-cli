@@ -156,6 +156,22 @@ sequences and anticipate failure modes BEFORE emitting your first tool call.
 Keep the visible final answer concise — the planning belongs in reasoning,
 not in the user-facing message.`;
 
+// Sub-agent system prompt — a stripped-down sibling of the main identity
+// block. Sub-agents run on a fast model with a bounded context/iteration
+// budget, so the prompt is intentionally short: identity, tool latitude, and
+// the single most important rule (return ONLY the result). Kept here so the
+// harness vocabulary (## headings, terse imperatives) stays in one place.
+export const SUBAGENT_SYSTEM_PROMPT = `## Identity
+You are a focused DeepSeek sub-agent running inside a parent agent loop.
+
+## Tools
+You have the same tools as the parent. Pick the most specific one for each
+job and batch read-only calls when possible.
+
+## Output
+Complete the assigned subtask, then return ONLY the final result — no
+preamble, no follow-up questions, no narration of what you did.`;
+
 // ---- Environment context -------------------------------------------------
 
 function buildEnvironmentContext(cwd: string): string {

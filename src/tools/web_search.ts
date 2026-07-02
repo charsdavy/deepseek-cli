@@ -4,6 +4,7 @@
 // then fetch the best hit for deeper reading.
 
 import type { Tool, ToolResult } from "./types.ts";
+import { errTag, tag } from "../prompt/harness.ts";
 
 const DEFAULT_MAX_RESULTS = 5;
 const ABSOLUTE_MAX_RESULTS = 10;
@@ -42,7 +43,7 @@ export const webSearchTool: Tool = {
   async execute(args): Promise<ToolResult> {
     const query = String(args.query ?? "").trim();
     if (!query) {
-      return { ok: false, content: "Missing required parameter: query.", error: "missing_arg" };
+      return { ok: false, content: errTag("web_search", "missing_arg", "Missing required parameter: query."), error: "missing_arg" };
     }
     const max = clampMaxResults(args.maxResults);
 
@@ -51,7 +52,7 @@ export const webSearchTool: Tool = {
       if (results.length === 0) {
         return {
           ok: true,
-          content: `<web_search query="${escapeAttr(query)}">\n(no results)\n</web_search>`,
+          content: tag("web_search", { query }, "(no results)"),
           uiSummary: `search "${truncate(query, 50)}" (0 results)`,
         };
       }
@@ -60,12 +61,12 @@ export const webSearchTool: Tool = {
         .join("\n\n");
       return {
         ok: true,
-        content: `<web_search query="${escapeAttr(query)}" count="${results.length}">\n${body}\n</web_search>`,
+        content: tag("web_search", { query, count: results.length }, body),
         uiSummary: `search "${truncate(query, 50)}" (${results.length} results)`,
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { ok: false, content: `web_search failed: ${msg}`, error: "search_failed" };
+      return { ok: false, content: errTag("web_search", "search_failed", `web_search failed: ${msg}`), error: "search_failed" };
     }
   },
 };
@@ -165,10 +166,6 @@ function stripTags(html: string): string {
     .replace(/&#39;/g, "'")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function escapeAttr(s: string): string {
-  return s.replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function truncate(s: string, n: number): string {

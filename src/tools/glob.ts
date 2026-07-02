@@ -2,7 +2,7 @@
 
 import * as path from "node:path";
 import type { Tool, ToolResult } from "./types.ts";
-import { paint } from "../ui/theme.ts";
+import { bullet, tag, trunc } from "../prompt/harness.ts";
 
 // Resolved lazily at first call; Bun ships Bun.Glob globally.
 function getGlobCtor(): (new (pattern: string) => {
@@ -71,14 +71,19 @@ export const globTool: Tool = {
       }
     }
 
-    const unique = Array.from(new Set(all)).sort().slice(0, 500);
-    const rendered = unique.length === 0
+    const unique = Array.from(new Set(all)).sort();
+    const total = unique.length;
+    const capped = unique.slice(0, 500);
+    const omitted = total - capped.length;
+    const body = capped.length === 0
       ? "(no matches)"
-      : unique.map((p) => `${paint.gray("•")} ${p}`).join("\n");
+      : capped.map((p) => bullet(p)).join("\n");
+    const note = omitted > 0 ? `\n${trunc(omitted, "results")}` : "";
+    const header = `Found ${total} file${total === 1 ? "" : "s"}${omitted > 0 ? `, showing first ${capped.length}` : ""}`;
     return {
       ok: true,
-      content: `Found ${unique.length} file${unique.length === 1 ? "" : "s"}.\n${rendered}`,
-      uiSummary: `glob ${pattern} → ${unique.length} files`,
+      content: tag("glob", { pattern, path: cwd }, `${header}\n${body}${note}`),
+      uiSummary: `glob ${pattern} → ${total} files`,
     };
   },
 };

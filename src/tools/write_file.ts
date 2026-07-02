@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import type { Tool, ToolResult } from "./types.ts";
+import { errTag, tag } from "../prompt/harness.ts";
 
 export const writeFileTool: Tool = {
   name: "write_file",
@@ -29,25 +30,33 @@ export const writeFileTool: Tool = {
     const filePath = String(args.filePath ?? "");
     const content = String(args.content ?? "");
     if (!filePath) {
-      return { ok: false, content: "Missing required parameter: filePath.", error: "missing_arg" };
+      return { ok: false, content: errTag("write", "missing_arg", "Missing required parameter: filePath."), error: "missing_arg" };
     }
     if (args.content === undefined || args.content === null) {
-      return { ok: false, content: "Missing required parameter: content.", error: "missing_arg" };
+      return { ok: false, content: errTag("write", "missing_arg", "Missing required parameter: content."), error: "missing_arg" };
     }
     const abs = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
+
+    // Capture existence BEFORE writing so the action label is correct: the
+    // original checked existsSync after the write, which always read true.
+    const existedBefore = existsSync(abs);
 
     try {
       await fs.mkdir(path.dirname(abs), { recursive: true });
       await fs.writeFile(abs, content, "utf-8");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { ok: false, content: `Failed to write '${abs}': ${msg}`, error: "io_error" };
+      return {
+        ok: false,
+        content: tag("write", { path: abs, error: "io_error" }, `Failed to write: ${msg}`),
+        error: "io_error",
+      };
     }
 
-    const action = existsSync(abs) ? "overwrote" : "created";
+    const action = existedBefore ? "overwrote" : "created";
     return {
       ok: true,
-      content: `Successfully ${action} ${abs} (${Buffer.byteLength(content, "utf-8")} bytes).`,
+      content: tag("write", { path: abs, action }, `Successfully ${action} (${Buffer.byteLength(content, "utf-8")} bytes).`),
       uiSummary: `${action} ${abs}`,
     };
   },

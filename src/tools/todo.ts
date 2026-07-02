@@ -2,6 +2,7 @@
 // Mirrors Claude Code's TodoWrite concept so the model keeps its own checklist.
 
 import type { Tool, ToolResult } from "./types.ts";
+import { errTag, tag } from "../prompt/harness.ts";
 
 export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
 export type TodoPriority = "high" | "medium" | "low";
@@ -49,7 +50,7 @@ export const todoWriteTool: Tool = {
 
   async execute(args, ctx): Promise<ToolResult> {
     if (!Array.isArray(args.todos)) {
-      return { ok: false, content: "Missing/invalid 'todos' array.", error: "missing_arg" };
+      return { ok: false, content: errTag("todo", "missing_arg", "Missing/invalid 'todos' array."), error: "missing_arg" };
     }
     const list: TodoItem[] = args.todos.map((t: Record<string, unknown>) => ({
       content: String(t.content ?? ""),
@@ -61,7 +62,7 @@ export const todoWriteTool: Tool = {
     const inProgressCount = list.filter((t) => t.status === "in_progress").length;
     return {
       ok: true,
-      content: `Todo list updated. ${list.length} items (${inProgressCount} in progress).`,
+      content: tag("todo", { items: list.length, in_progress: inProgressCount }, `Todo list updated. ${list.length} items (${inProgressCount} in progress).`),
       uiSummary: `todos: ${list.length} items`,
     };
   },

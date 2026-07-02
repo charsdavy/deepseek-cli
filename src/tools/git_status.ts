@@ -6,6 +6,7 @@
 
 import type { Tool, ToolResult } from "./types.ts";
 import { isGitRepo, resolveGitCwd, runGit } from "./git_helpers.ts";
+import { cap, tag } from "../prompt/harness.ts";
 
 const MAX_OUTPUT = 16_000;
 
@@ -54,26 +55,21 @@ export const gitStatusTool: Tool = {
     if (code !== 0) {
       return {
         ok: false,
-        content: `git ${argv.join(" ")} failed (exit ${code}):\n${stderr || stdout}`,
+        content: tag("git_status", { error: "git_error" }, `git ${argv.join(" ")} failed (exit ${code}):\n${stderr || stdout}`),
         error: "git_error",
         uiSummary: `git_status: exit ${code}`,
       };
     }
 
-    const body = truncate(stdout || "(clean working tree)");
+    const body = cap(stdout || "(clean working tree)", MAX_OUTPUT);
     const { branch, changed } = summarize(stdout);
     return {
       ok: true,
-      content: body,
+      content: tag("git_status", {}, body),
       uiSummary: `git_status: ${branch}${changed > 0 ? ` · ${changed} changed` : " · clean"}`,
     };
   },
 };
-
-function truncate(s: string): string {
-  if (s.length <= MAX_OUTPUT) return s;
-  return s.slice(0, MAX_OUTPUT) + `\n…(truncated, ${s.length - MAX_OUTPUT} more chars)`;
-}
 
 function summarize(stdout: string): { branch: string; changed: number } {
   const lines = stdout.split("\n").filter((l) => l.length > 0);

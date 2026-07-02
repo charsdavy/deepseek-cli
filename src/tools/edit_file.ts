@@ -5,6 +5,7 @@
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import type { Tool, ToolResult } from "./types.ts";
+import { errTag, tag } from "../prompt/harness.ts";
 
 export const editFileTool: Tool = {
   name: "edit_file",
@@ -38,40 +39,38 @@ export const editFileTool: Tool = {
     const replaceAll = args.replaceAll === true;
 
     if (!filePath) {
-      return { ok: false, content: "Missing required parameter: filePath.", error: "missing_arg" };
+      return { ok: false, content: errTag("edit", "missing_arg", "Missing required parameter: filePath."), error: "missing_arg" };
     }
     if (oldStr === "") {
-      return { ok: false, content: "oldString must be non-empty.", error: "missing_arg" };
+      return { ok: false, content: errTag("edit", "missing_arg", "oldString must be non-empty."), error: "missing_arg" };
     }
     if (oldStr === newStr) {
-      return { ok: false, content: "oldString and newString are identical; nothing to do.", error: "noop" };
+      return { ok: false, content: errTag("edit", "noop", "oldString and newString are identical; nothing to do."), error: "noop" };
     }
 
     const abs = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
+
+    const fail = (error: string, message: string): ToolResult => ({
+      ok: false,
+      content: tag("edit", { path: abs, error }, message),
+      error,
+    });
 
     let content: string;
     try {
       content = await fs.readFile(abs, "utf-8");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { ok: false, content: `Cannot read '${abs}': ${msg}`, error: "read_failed" };
+      return fail("read_failed", `Cannot read: ${msg}`);
     }
 
     if (!content.includes(oldStr)) {
-      return {
-        ok: false,
-        content: `oldString not found in ${abs}. Re-check the file content (it may have changed) and ensure your oldString matches exactly, including whitespace.`,
-        error: "old_not_found",
-      };
+      return fail("old_not_found", "oldString not found. Re-check the file content (it may have changed) and ensure your oldString matches exactly, including whitespace.");
     }
 
     const occurrences = countOccurrences(content, oldStr);
     if (occurrences > 1 && !replaceAll) {
-      return {
-        ok: false,
-        content: `Found ${occurrences} matches for oldString in ${abs}. Provide more surrounding context to make oldString unique, or set replaceAll=true.`,
-        error: "multiple_matches",
-      };
+      return fail("multiple_matches", `Found ${occurrences} matches. Provide more surrounding context to make oldString unique, or set replaceAll=true.`);
     }
 
     let newContent: string;
@@ -87,13 +86,13 @@ export const editFileTool: Tool = {
       await fs.writeFile(abs, newContent, "utf-8");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { ok: false, content: `Failed to write '${abs}': ${msg}`, error: "io_error" };
+      return fail("io_error", `Failed to write: ${msg}`);
     }
 
     const diffLines = unidiff(content, newContent);
     return {
       ok: true,
-      content: `Edited ${abs} (${occurrences} replacement${occurrences > 1 ? "s" : ""}).\n\n${diffLines}`,
+      content: tag("edit", { path: abs, replacements: occurrences }, `${occurrences} replacement${occurrences > 1 ? "s" : ""} applied.\n\n${diffLines}`),
       uiSummary: `edited ${abs}`,
     };
   },

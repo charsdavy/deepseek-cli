@@ -4,7 +4,7 @@
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import type { Tool, ToolResult } from "./types.ts";
-import { paint } from "../ui/theme.ts";
+import { lineNo, tag } from "../prompt/harness.ts";
 
 const MAX_BYTES = 200_000; // ~200KB hard ceiling per read
 const DEFAULT_LIMIT = 2000;
@@ -86,13 +86,7 @@ export const readFileTool: Tool = {
     const lines = content.replace(/\r\n/g, "\n").split("\n");
     const startIdx = offset - 1;
     const slice = lines.slice(startIdx, startIdx + limit);
-    const rendered = slice
-      .map((line, i) => {
-        const lineNo = offset + i;
-        const numStr = String(lineNo).padStart(6, " ");
-        return `${paint.gray(numStr + ": ")}${truncateLine(line)}`;
-      })
-      .join("\n");
+    const rendered = slice.map((line, i) => lineNo(offset + i, line)).join("\n");
 
     const totalLines = lines.length;
     const shown = slice.length;
@@ -102,14 +96,9 @@ export const readFileTool: Tool = {
 
     return {
       ok: true,
-      content: `<file path="${abs}">\n${rendered}\n</file>${suffix}`,
+      content: `${tag("file", { path: abs }, rendered)}${suffix}`,
       uiSummary: `read ${abs} (${shown}/${totalLines} lines)`,
     };
   },
 };
 
-function truncateLine(s: string): string {
-  const max = 1000;
-  if (s.length <= max) return s;
-  return s.slice(0, max - 1) + "…";
-}

@@ -8,6 +8,7 @@
 // final answer is returned as the tool result.
 
 import type { Tool, ToolResult } from "./types.ts";
+import { errTag, tag } from "../prompt/harness.ts";
 
 export const taskTool: Tool = {
   name: "task",
@@ -31,10 +32,10 @@ export const taskTool: Tool = {
   async execute(args, ctx): Promise<ToolResult> {
     const prompt = String(args.prompt ?? "");
     if (!prompt) {
-      return { ok: false, content: "Missing required parameter: prompt.", error: "missing_arg" };
+      return { ok: false, content: errTag("subtask", "missing_arg", "Missing required parameter: prompt."), error: "missing_arg" };
     }
     if (!ctx.spawnAgent) {
-      return { ok: false, content: "Sub-agent spawning is unavailable in this context.", error: "no_spawner" };
+      return { ok: false, content: errTag("subtask", "no_spawner", "Sub-agent spawning is unavailable in this context."), error: "no_spawner" };
     }
     const description = args.description ? String(args.description) : prompt.slice(0, 60);
     ctx.onProgress?.(`sub-agent: ${description}`);
@@ -42,12 +43,12 @@ export const taskTool: Tool = {
       const result = await ctx.spawnAgent(prompt, { description, cwd: ctx.cwd });
       return {
         ok: true,
-        content: result || "(sub-agent returned no text)",
+        content: tag("subtask", { description: truncate(description, 60) }, result || "(sub-agent returned no text)"),
         uiSummary: `sub-agent: ${truncate(description, 50)}`,
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { ok: false, content: `Sub-agent failed: ${msg}`, error: "subagent_error" };
+      return { ok: false, content: errTag("subtask", "subagent_error", `Sub-agent failed: ${msg}`), error: "subagent_error" };
     }
   },
 };

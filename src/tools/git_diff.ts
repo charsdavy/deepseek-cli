@@ -6,6 +6,7 @@
 
 import type { Tool, ToolResult } from "./types.ts";
 import { isGitRepo, resolveGitCwd, runGit } from "./git_helpers.ts";
+import { cap, tag } from "../prompt/harness.ts";
 
 const MAX_OUTPUT = 64_000;
 
@@ -78,28 +79,25 @@ export const gitDiffTool: Tool = {
     if (code !== 0 && code !== 1) {
       return {
         ok: false,
-        content: `git ${argv.join(" ")} failed (exit ${code}):\n${stderr || stdout}`,
+        content: tag("git_diff", { error: "git_error" }, `git ${argv.join(" ")} failed (exit ${code}):\n${stderr || stdout}`),
         error: "git_error",
         uiSummary: `git_diff: exit ${code}`,
       };
     }
 
-    const body = truncate(stdout || "(no changes)");
+    const raw = stdout || "(no changes)";
+    const body = cap(raw, MAX_OUTPUT);
     const summary = args.stat ? "git diff --stat" : "git diff";
     return {
       ok: true,
-      content: body,
+      content: tag("git_diff", {}, body),
       uiSummary: `${summary} → ${summarizeStat(stdout)}`,
     };
   },
 };
 
-function truncate(s: string): string {
-  if (s.length <= MAX_OUTPUT) return s;
-  return s.slice(0, MAX_OUTPUT) + `\n…(truncated, ${s.length - MAX_OUTPUT} more chars)`;
-}
-
 function summarizeStat(stdout: string): string {
   const m = stdout.match(/(\d+) files? changed/i);
   return m ? `${m[1]} changed` : (stdout ? "diff" : "clean");
 }
+

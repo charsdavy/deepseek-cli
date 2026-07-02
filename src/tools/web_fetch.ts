@@ -2,6 +2,7 @@
 // Strips HTML tags heuristically to keep the content token-friendly.
 
 import type { Tool, ToolResult } from "./types.ts";
+import { errTag, tag, trunc } from "../prompt/harness.ts";
 
 const MAX_BYTES = 64_000;
 
@@ -31,10 +32,10 @@ export const webFetchTool: Tool = {
   async execute(args): Promise<ToolResult> {
     const url = String(args.url ?? "");
     if (!url) {
-      return { ok: false, content: "Missing required parameter: url.", error: "missing_arg" };
+      return { ok: false, content: errTag("web", "missing_arg", "Missing required parameter: url."), error: "missing_arg" };
     }
     if (!/^https?:\/\//i.test(url)) {
-      return { ok: false, content: "URL must start with http:// or https://", error: "bad_scheme" };
+      return { ok: false, content: errTag("web", "bad_scheme", "URL must start with http:// or https://"), error: "bad_scheme" };
     }
     const format = (String(args.format ?? "text") as "text" | "markdown" | "html");
 
@@ -45,7 +46,7 @@ export const webFetchTool: Tool = {
         signal: AbortSignal.timeout(30_000),
       });
       if (!res.ok) {
-        return { ok: false, content: `HTTP ${res.status} ${res.statusText} for ${url}`, error: "http_error" };
+        return { ok: false, content: errTag("web", "http_error", `HTTP ${res.status} ${res.statusText}`), error: "http_error" };
       }
       const contentType = res.headers.get("content-type") ?? "";
       const body = await res.text();
@@ -58,15 +59,17 @@ export const webFetchTool: Tool = {
       } else {
         out = stripHtml(body);
       }
-      out = out.slice(0, MAX_BYTES);
+      const originalLen = out.length;
+      const sliced = out.slice(0, MAX_BYTES);
+      const note = originalLen > MAX_BYTES ? trunc(originalLen - MAX_BYTES, "chars") : "";
       return {
         ok: true,
-        content: `<web title="${extractTitle(body) || url}" url="${url}">\n${out}\n</web>`,
-        uiSummary: `fetch ${url} (${out.length} chars)`,
+        content: tag("web", { url, title: extractTitle(body) || url, format }, `${sliced}${note}`),
+        uiSummary: `fetch ${url} (${sliced.length} chars)`,
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { ok: false, content: `Failed to fetch ${url}: ${msg}`, error: "fetch_failed" };
+      return { ok: false, content: errTag("web", "fetch_failed", `Failed to fetch: ${msg}`), error: "fetch_failed" };
     }
   },
 };
