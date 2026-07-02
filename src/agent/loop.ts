@@ -90,6 +90,9 @@ export async function runAgentLoop(
   const unknownCounts = new Map<string, number>();
   let abuseDetected = false;
   const registeredNames = tools.list().map((t) => t.name).join(", ");
+  // One-shot nudge when this conversation is already large: steer the model
+  // toward context-economical tools so it doesn't keep bloating the thread.
+  let contextNudgeShown = false;
   log.info("agent loop start", { model: opts.model, reasoning: shouldReason, reasonEffort: opts.reasoningEffort, maxContext: opts.maxContext, messages: messagesIn.length, maxIterations });
 
   while (iterations < maxIterations) {
@@ -118,6 +121,19 @@ export async function runAgentLoop(
       );
     }
     messages = trimmed.messages;
+
+    // Context-economy nudge: once the live conversation crosses a meaningful
+    // size, inject a one-shot reminder to prefer lean tools (grep/glob/task)
+    // over whole-file re-reads. Fired once per loop, not every iteration.
+    if (!contextNudgeShown && trimmed.tokensBefore > 50_000) {
+      contextNudgeShown = true;
+      log.info("context nudge shown", { tokensBefore: trimmed.tokensBefore });
+      messages.push({
+        role: "system",
+        content:
+          "Context is large (>50k tokens). Prefer grep/glob to locate code over whole-file read_file; delegate self-contained investigations to the `task` sub-agent so their context stays out of this thread; do not re-read files already in context.",
+      });
+    }
 
     let acc: AccumulatedAssistant = { content: "", reasoning: "", toolCalls: [] };
     let hadApiError = false;
