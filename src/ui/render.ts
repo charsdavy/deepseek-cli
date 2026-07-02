@@ -5,14 +5,19 @@ export { setOutputSilent } from "./theme.ts";
 
 // ---- Low-level IO ----
 
+// Normalize \n → \r\n at the lowest level. setRawMode(true) calls cfmakeraw()
+// which disables OPOST, so the kernel no longer translates \n to \r\n on
+// output. Using \r\n everywhere ensures lines start at col 0 in both raw and
+// cooked mode (in cooked mode the extra \r is a harmless no-op). The regex
+// \r?\n → \r\n handles both bare \n and existing \r\n without doubling.
 export function streamWrite(text: string): void {
   if (outputSilent) return;
-  Bun.stdout.write(text);
+  Bun.stdout.write(text.replace(/\r?\n/g, "\r\n"));
 }
 
 export function writeLine(text = ""): void {
   if (outputSilent) return;
-  process.stdout.write(text + "\n");
+  process.stdout.write(text.replace(/\r?\n/g, "\r\n") + "\r\n");
 }
 
 export function blank(): void {

@@ -48,14 +48,14 @@ export async function askHidden(prompt: string): Promise<string> {
     const onData = (buf: Buffer) => {
       for (const b of buf) {
         if (b === 0x0d || b === 0x0a) {
-          output.write("\n");
+          output.write("\r\n");
           cleanup(true);
           resolve(acc);
           return;
         }
         if (b === 0x03) {
           // Ctrl-C
-          output.write("\n");
+          output.write("\r\n");
           cleanup(true);
           resolve("");
           return;
@@ -194,14 +194,14 @@ export async function askMultiline(
       const lines = buf.split("\n");
       output.write(curPrompt + lines[0]);
       for (let i = 1; i < lines.length; i++) {
-        output.write(`\n\x1b[K${lines[i]}`);
+        output.write(`\r\n\x1b[K${lines[i]}`);
       }
       displayLines = lines.length;
     }
 
     const m = matches();
     if (m.length > 0 && displayLines === 1 && !pasteSummary) {
-      output.write(`\n\x1b[K${paint.dim(m.join("  "))}`);
+      output.write(`\r\n\x1b[K${paint.dim(m.join("  "))}`);
       overlayRows = 1;
       output.write(`\x1b[A`); // back up to the input row
     } else {
@@ -248,10 +248,28 @@ export async function askMultiline(
   const submitLine = (full: string): void => {
     if (resolved) return;
     resolved = true;
-    cleanup();
-    // Move to a fresh line so the user's typed input stays on its own row
-    // and subsequent output (spinner / reasoning) does not overwrite it.
+    // Detach the input listener but DON'T call cleanup() — that erases the
+    // entire display with \x1b[J, wiping out the prompt (👤 ›) and the user's
+    // typed text. We want those to remain visible as a permanent record.
+    tty.off("data", onData);
+    // Clear the suggestion overlay if present (drawn on the line below the
+    // input row). Move down, clear that line only, move back up.
+    if (overlayRows > 0) {
+      output.write(`\r\n\x1b[K\x1b[A`);
+    }
+    // Move the cursor to the last display line so the newline below starts
+    // on a fresh row beneath all input content (important for multi-line
+    // input where the cursor may be on an earlier line).
+    if (!pasteSummary) {
+      const cursorLine = buf.slice(0, cur).split("\n").length - 1;
+      const lastLine = displayLines - 1;
+      if (cursorLine < lastLine) {
+        output.write(`\x1b[${lastLine - cursorLine}B`);
+      }
+    }
+    // Start a fresh line for subsequent output (spinner / reasoning / reply).
     output.write("\r\n");
+    tty.setRawMode?.(savedRaw);
     resolveFn(full);
   };
 
@@ -335,14 +353,14 @@ export async function askMultiline(
       if (fence) { submitLine(acc.replace(/\s+$/, "")); return; }
       fence = true;
       buf = ""; cur = 0;
-      output.write("\n"); curPrompt = paint.gray("› "); render();
+      output.write("\r\n"); curPrompt = paint.gray("› "); render();
       return;
     }
-    if (fence) { acc += buf + "\n"; buf = ""; cur = 0; output.write("\n"); curPrompt = paint.gray("› "); render(); return; }
+    if (fence) { acc += buf + "\n"; buf = ""; cur = 0; output.write("\r\n"); curPrompt = paint.gray("› "); render(); return; }
     if (trimmedEnd.endsWith("\\")) {
       acc += trimmedEnd.slice(0, -1) + "\n";
       buf = ""; cur = 0;
-      output.write("\n"); curPrompt = paint.gray("› "); render();
+      output.write("\r\n"); curPrompt = paint.gray("› "); render();
       return;
     }
     submitLine(acc + buf);
@@ -431,7 +449,7 @@ export function watchDoubleEsc(onAbort: () => void): () => void {
       // First tap registered — nudge the user with a one-liner on its own row
       // so they know a second tap will cancel. Kept minimal to avoid clobbering
       // streaming output; the spinner / renderer keep writing below it.
-      output.write("\n" + paint.yellow("  (Esc again to cancel)") + "\n");
+      output.write("\r\n" + paint.yellow("  (Esc again to cancel)") + "\r\n");
     }
   };
 
@@ -497,7 +515,7 @@ export function watchTurnInput(
         return;
       }
       lastEsc = now;
-      output.write("\n" + paint.yellow("  (Esc again to cancel)") + "\n");
+      output.write("\r\n" + paint.yellow("  (Esc again to cancel)") + "\r\n");
       return;
     }
 
@@ -607,12 +625,12 @@ export async function selectOption(
   const draw = (initial: boolean): void => {
     if (!initial) output.write(`\x1b[${N}A`); // move up to the first option line
     for (let i = 0; i < N; i++) {
-      output.write(`\r\x1b[K${lineFor(i)}\n`);
+      output.write(`\r\x1b[K${lineFor(i)}\r\n`);
     }
   };
 
-  output.write(`${title}\n`);
-  output.write(`\x1b[2m  ↑/↓ navigate · enter select · esc cancel\x1b[0m\n`);
+  output.write(`${title}\r\n`);
+  output.write(`\x1b[2m  ↑/↓ navigate · enter select · esc cancel\x1b[0m\r\n`);
   draw(true);
 
   return new Promise<string | null>((resolve) => {

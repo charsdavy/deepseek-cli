@@ -45,7 +45,7 @@ function render(): void {
   if (active.frame > 0) {
     process.stdout.write(`\x1b[A`);
   }
-  process.stdout.write(`\r${C.reset}\x1b[K${frame} ${paint.gray(active.text)}${suffix}\n\r`);
+  process.stdout.write(`\r${C.reset}\x1b[K${frame} ${paint.gray(active.text)}${suffix}\r\n`);
   active.frame++;
 }
 
@@ -70,17 +70,21 @@ export const spinner = {
 
   update(text: string): void {
     if (outputSilent) return;
-    if (!active) {
-      this.start(text);
-      return;
-    }
+    // Do NOT restart the spinner if it was stopped. During content/reasoning
+    // output, onContentDelta/onReasoningDelta stop the spinner to write text
+    // to stdout. If the user types during that window, watchTurnInput's onType
+    // calls update() — restarting the spinner here would clobber the text being
+    // written (its 80ms render() clears lines with \x1b[A\r\x1b[K). The user's
+    // typing is still captured by watchTurnInput's buffer and queued on Enter;
+    // it just won't be reflected in the spinner until it restarts next iteration.
+    if (!active) return;
     active.text = text;
   },
 
   stop(finalText?: string): void {
     if (!active) {
       if (finalText !== undefined && !outputSilent) {
-        process.stdout.write(`\r${C.reset}${finalText}\n`);
+        process.stdout.write(`\r${C.reset}${finalText}\r\n`);
       }
       return;
     }
@@ -92,7 +96,7 @@ export const spinner = {
         // Render one final static frame (bright ⏺) and move to the next
         // line, preserving the tool header as a permanent record.
         const frame = active.frames[0]; // force bright ⏺
-        process.stdout.write(`\x1b[A\r${C.reset}\x1b[K${frame} ${paint.gray(active.text)}\n\r`);
+        process.stdout.write(`\x1b[A\r${C.reset}\x1b[K${frame} ${paint.gray(active.text)}\r\n`);
       } else {
         // Clear the spinner line → cursor at col 0 of the now-empty line.
         process.stdout.write(`\x1b[A\r${C.reset}\x1b[K`);
@@ -100,8 +104,13 @@ export const spinner = {
     }
     active = null;
     if (finalText !== undefined && !outputSilent) {
-      process.stdout.write(`${finalText}\n`);
+      process.stdout.write(`${finalText}\r\n`);
     }
+  },
+
+  /** Exposed for tests: true when the spinner is running (interval active). */
+  isActive(): boolean {
+    return active !== null;
   },
 };
 

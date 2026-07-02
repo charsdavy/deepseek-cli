@@ -593,13 +593,19 @@ export function makeStreamRenderer(opts: StreamRenderOptions) {
     },
     onReasoningDelta(delta: string) {
       if (!opts.showReasoning) return;
+      // Always stop the spinner — the agent loop re-starts "thinking…" at
+      // the top of every iteration, so it may be active even when
+      // inReasoning is still true from a previous iteration that had
+      // reasoning → tools (no content). Without this, the spinner's 80ms
+      // render() clobbers reasoning text (garbled display). Mirrors
+      // onContentDelta, which always stops the spinner first.
+      spinner.stop();
       if (!inReasoning) {
-        spinner.stop();
         writeLine(`${paint.gray(`${symbol.brain} reasoning:`)}`);
         inReasoning = true;
         started = true;
       }
-      process.stdout.write(paint.dim(delta));
+      process.stdout.write(paint.dim(delta).replace(/\n/g, "\r\n"));
     },
     /** Flush any pending partial line to stdout. Called by the agent loop
      *  before showing a tool marker so unflushed content from the model's
