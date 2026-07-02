@@ -80,7 +80,12 @@ Examples:
 
 export function parseArgs(argv: string[]): ParsedArgs {
   const args = argv.slice(2);
-  const out: ParsedArgs = { command: "chat", reasoning: false };
+  // `reasoning` deliberately left undefined here (NOT false): runChat resolves
+  // it as `args.reasoning ?? cfg.reasoning ?? isReasoningModel(model)`. A
+  // false default would short-circuit `??` and silently ignore a `reasoning:
+  // true` set in config.json — which is exactly the config/run-state mismatch
+  // we hit in production. undefined means "user didn't pass -r, defer to cfg".
+  const out: ParsedArgs = { command: "chat" };
 
   let i = 0;
   while (i < args.length) {

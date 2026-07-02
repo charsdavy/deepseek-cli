@@ -366,6 +366,15 @@ describe("parseArgs", () => {
     expect(a.prompt).toBe("q");
   });
 
+  it("leaves reasoning undefined when -r is absent (so cfg.reasoning wins via ??)", () => {
+    // Regression: parseArgs used to default reasoning=false, which
+    // short-circuited `args.reasoning ?? cfg.reasoning` in runChat and
+    // silently ignored a `reasoning: true` in config.json. undefined lets
+    // the nullish-coalescing chain fall through to the config value.
+    const a = parseArgs(["node", "deepseek", "hi"]);
+    expect(a.reasoning).toBeUndefined();
+  });
+
   it("dispatches auth subcommand", () => {
     const a = parseArgs(["node", "deepseek", "auth"]);
     expect(a.command).toBe("auth");
