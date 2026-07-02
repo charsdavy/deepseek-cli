@@ -93,6 +93,14 @@ export async function runAgentLoop(
   // One-shot nudge when this conversation is already large: steer the model
   // toward context-economical tools so it doesn't keep bloating the thread.
   let contextNudgeShown = false;
+  // Auto-downgrade reasoning effort during long read-only exploration runs
+  // (max→high) so each tool-call iteration stops paying deepest-thinking
+  // overhead for pure grep/read work. Restored only by the user via /think.
+  let effectiveEffort = opts.reasoningEffort;
+  let effortDowngraded = false;
+  // One-shot "wrap up" nudge near the iteration cap so the turn ends with a
+  // usable answer instead of running off the cliff with finalText empty.
+  let wrapUpHintShown = false;
   log.info("agent loop start", { model: opts.model, reasoning: shouldReason, reasonEffort: opts.reasoningEffort, maxContext: opts.maxContext, messages: messagesIn.length, maxIterations });
 
   while (iterations < maxIterations) {
@@ -135,6 +143,20 @@ export async function runAgentLoop(
       });
     }
 
+    // Wrap-up nudge: when the iteration budget is running low, steer the model
+    // toward finishing with a usable answer instead of running off the cap
+    // with an empty finalText (observed: 4 turns hit iter=30 with no output).
+    if (!wrapUpHintShown && maxIterations - iterations <= 10) {
+      wrapUpHintShown = true;
+      log.info("wrap-up nudge shown", { iteration: iterations, remaining: maxIterations - iterations });
+      messages.push({
+        role: "system",
+        content:
+          "The iteration budget is almost exhausted (~10 left). Wrap up now: finish only the in-flight edit, then produce a concrete final answer stating what was done and what remains for the next turn. Do not start new investigations or new files.",
+      });
+      printSystem("approaching iteration cap — prompting the model to wrap up", "yellow");
+    }
+
     let acc: AccumulatedAssistant = { content: "", reasoning: "", toolCalls: [] };
     let hadApiError = false;
 
@@ -147,7 +169,7 @@ export async function runAgentLoop(
         tools: tools.schemas() as ToolDef[],
         temperature: opts.temperature,
         reasoning: shouldReason,
-        reasoningEffort: opts.reasoningEffort,
+        reasoningEffort: effectiveEffort,
         maxTokens: opts.maxTokens,
         signal: opts.signal,
         baseUrl: opts.baseUrl,
@@ -186,8 +208,20 @@ export async function runAgentLoop(
     } catch (e) {
       hadApiError = true;
       if (e instanceof DeepSeekUnauthorized) {
-        log.error("api unauthorized", { status: e.status });
-        printError(`${e.message} Run \`deepseek auth\` to reconfigure.`);
+        log.error("api unauthorized", { status: e.status, note: "401 — check API key / baseUrl / proxy; if intermittent, the key may be rate-limited or region-locked" });
+        // Defense: a 401 mid-stream can leave a partial assistant message
+        // (with tool_calls whose results never landed). Drop any trailing
+        // assistant message that carries tool_calls but no matching tool
+        // results, so the next turn doesn't resend a broken history that
+        // triggers 400/loops.
+        if (messages.length > 0) {
+          const last = messages[messages.length - 1];
+          if (last.role === "assistant" && last.tool_calls && last.tool_calls.length > 0) {
+            messages.pop();
+            log.info("dropped dangling assistant message after 401", { toolCalls: last.tool_calls.length });
+          }
+        }
+        printError(`${e.message} If this keeps happening intermittently, the key may be rate-limited or the baseUrl/proxy may be rejecting some requests. Run \`deepseek auth\` to reconfigure.`);
         throw e;
       }
       // An AbortError means the user interrupted the stream — stop cleanly.
@@ -371,10 +405,19 @@ export async function runAgentLoop(
       ) {
         explorationHintShown = true;
         log.info("exploration hint shown", { iteration: iterations, streak: readOnlyStreak });
+        // Auto-downgrade deepest thinking during exploration: max→high trims
+        // seconds off every subsequent read-only iteration without hurting
+        // accuracy for grep/read/list tasks. The user restores max via /think.
+        if (effectiveEffort === "max" && !effortDowngraded) {
+          effortDowngraded = true;
+          effectiveEffort = "high";
+          log.info("effort auto-downgraded", { from: "max", to: "high", iteration: iterations });
+        }
         writeLine();
         printTip(
           `${readOnlyStreak} consecutive read-only iterations under a reasoning model — ` +
-          `run /fast to switch to deepseek-chat (much snappier exploration); /think to switch back when writing code.`,
+          `running /fast switches to deepseek-chat (much snappier exploration); /think switches back when writing code.` +
+          (effortDowngraded ? " Thinking effort auto-lowered max→high for this turn." : ""),
         );
       }
     }
@@ -390,8 +433,20 @@ export async function runAgentLoop(
   }
 
   if (iterations >= maxIterations) {
-    log.warn("max iterations reached", { maxIterations });
-    printSystem(`max iterations (${maxIterations}) reached — stopping agent.`, "yellow");
+    log.warn("max iterations reached", { maxIterations, finalTextLen: finalText.length });
+    if (finalText.length === 0) {
+      // The turn produced no answer at all — typically a task that's too big
+      // for one loop, or a model stuck in a tool loop. Tell the user plainly
+      // rather than silently returning an empty response.
+      printSystem(
+        `max iterations (${maxIterations}) reached with NO output produced. ` +
+          `The task was likely too large for one turn, or the model looped. ` +
+          `Try splitting it into smaller steps (todo_write) and running them across turns.`,
+        "yellow",
+      );
+    } else {
+      printSystem(`max iterations (${maxIterations}) reached — stopping agent.`, "yellow");
+    }
   }
 
   const loopMs = Math.round(performance.now() - loopStart);
