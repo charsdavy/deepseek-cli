@@ -14,7 +14,7 @@ The CLI pairs streaming chat completions with **tool calling** — the model can
 
 - **Agentic tool loop** — model drives the work: read → edit → bash → grep until the task is done.
 - **Streaming** chat with reasoning trace support (`deepseek-reasoner`).
-- **13 built-in tools**: `read_file`, `write_file`, `edit_file`, `bash`, `glob`, `grep`, `web_fetch`, `web_search`, `git_diff`, `git_status`, `list_dir`, `task`, `todo_write`.
+- **14 built-in tools**: `read_file`, `read_files`, `write_file`, `edit_file`, `bash`, `glob`, `grep`, `web_fetch`, `web_search`, `git_diff`, `git_status`, `list_dir`, `task`, `todo_write`.
 - **Sub-agents** — the `task` tool spawns nested agent loops; independent subtasks run in **parallel** when issued together.
 - **MCP support** — connect Model Context Protocol servers (stdio) and use their tools alongside the built-ins; toggle servers per-session with `/mcp`.
 - **Skills** — load specialized instruction packs from deepseek **and** Claude Code / Codex / codemaker skill dirs (both flat `<name>.md` and directory `<name>/SKILL.md` layouts, incl. symlinked); pick which are active with `/skill`.
@@ -26,6 +26,7 @@ The CLI pairs streaming chat completions with **tool calling** — the model can
 - **Real token usage** — per-turn + cumulative session token totals captured from the API and shown via `/tokens`.
 - **Session persistence** — every interactive turn is auto-saved to `~/.deepseek-cli/sessions/`; resume with `-c` or `--resume <id>`.
 - **Context window management** — old turns are auto-trimmed, and oversized tool results are capped to fit the model budget.
+- **Wrap-up summaries** — when the agent hits the iteration cap with no final answer, it makes one more tool-free request to produce a concise progress summary (done / in-flight / remaining) instead of returning a blank turn.
 - **Project instructions** — automatically loads `AGENTS.md` / `deepseek.md` / `.cursorrules` into the system prompt.
 - **Truly zero runtime deps** — API client is raw `fetch` + SSE; single binary ships ~60 MB.
 - **Zero-dependency terminal UI** — ANSI colors, fenced code blocks, box-drawing panels, masked password input.
@@ -93,6 +94,7 @@ deepseek config                                 # show merged config
 | `/reasoning [on|off\|effort high\|max]` | Show/set thinking default + intensity                          |
 | `/context [tokens]` | Show/set the context-trim budget                              |
 | `/allow [tool\|all\|reset]` | One-key authorize a tool (e.g. `bash`) for the session |
+| `/approve [auto\|ask]`    | Toggle bash approval mode (auto = skip prompts, ask = prompt each time) |
 | `/log`           | Show the log file path                                  |
 | `/promptlog [on\|off\|recent\|search\|clear]` | Per-turn prompt logging for retrospective optimization |
 | `/new`           | Start a fresh session — clears context, new id         |
@@ -123,7 +125,7 @@ Configuration is read from `~/.deepseek-cli/config.json` (file mode `0600`). Env
 
 | Flag                              | Purpose                                                            |
 | --------------------------------- | ------------------------------------------------------------------ |
-| `-m, --model <name>`              | Model id (default `deepseek-chat`)                                 |
+| `-m, --model <name>`              | Model id (default `auto`)                                         |
 | `-s, --system <text>`             | Override the system prompt                                         |
 | `-r, --reasoning`                 | Force reasoning mode                                               |
 | `-c, --continue`                  | Resume the most recent session                                     |
@@ -150,7 +152,8 @@ Configuration is read from `~/.deepseek-cli/config.json` (file mode `0600`). Env
 
 | Model id            | Notes                                            |
 | ------------------- | ------------------------------------------------ |
-| `deepseek-v4-flash` | Fast/lightweight; non-thinking default (default) |
+| `auto`              | Auto-select based on task complexity (default)   |
+| `deepseek-v4-flash` | Fast/lightweight; non-thinking                   |
 | `deepseek-v4-pro`   | Flagship; thinking default                       |
 | `deepseek-chat`     | Legacy; **deprecating 2026-07-24**                |
 | `deepseek-reasoner` | Legacy reasoning; **deprecating 2026-07-24**      |
@@ -180,7 +183,9 @@ Skill files are discovered from the deepseek, Claude Code, Codex, and codemaker 
 | `~/.claude/skills/<name>/SKILL.md`        | Claude Code     |
 | `<repo>/.claude/skills/<name>/SKILL.md`   | Claude Code     |
 | `~/.codex/skills/<name>/SKILL.md`         | Codex           |
+| `<repo>/.codex/skills/<name>/SKILL.md`    | Codex           |
 | `~/.codemaker/skills/<name>/SKILL.md`     | codemaker       |
+| `<repo>/.codemaker/skills/<name>/SKILL.md`| codemaker       |
 
 ```bash
 # scaffold a skill (codex-style template: frontmatter + When/Instructions/Examples/Constraints)
@@ -319,8 +324,9 @@ Per-turn timing: turns that take **5s or more** also surface an `elapsed Xs` mar
 The dominant source of perceived slowness is **per-iteration model reasoning time**, not the tools themselves. A reasoner-class model (`deepseek-reasoner` / `deepseek-v4-pro`) spends several seconds thinking before emitting each batch of tool calls; on long exploration flows (many `read_file`/`grep`/`list_dir` calls across iterations) those seconds stack into minutes. Three mitigations ship:
 
 1. **`/fast` ↔ `/think`** — one-keystroke model switching. Run `/fast` when you start exploring (jumps to `deepseek-chat` + reasoning off, ~5–10× snappier per iteration); run `/think` when you're ready to actually write code (back to `deepseek-reasoner` + reasoning high). The REPL startup tip reminds you this exists.
-2. **System-prompt guidance** — `## Iteration cost (very important)` tells the model to batch read-only tools in a single turn, avoid chaining `bash echo "==="` style inspection across iterations, and only update `todo_write` when the plan materially changes. This is the single largest lever on round-trip count.
+2. **System-prompt guidance** — `## Iteration cost (very important)` tells the model to batch read-only tools in a single turn, prefer `read_files` (batch) over multiple `read_file` calls, avoid chaining `bash echo "==="` style inspection across iterations, and only update `todo_write` when the plan materially changes. This is the single largest lever on round-trip count.
 3. **Automatic exploration-phase hint** — when the agent loop detects ≥3 consecutive iterations where every emitted tool was read-only AND you're running under a reasoner, it prints a one-shot tip pointing at `/fast`. It fires at most once per turn so it never gets chatty; emits nothing if you're already on `deepseek-chat`.
+4. **Automatic reasoning-effort downgrade** — during long read-only exploration runs under `max` effort, the loop auto-downgrades to `high` to reduce per-iteration thinking overhead. Restored to `max` as soon as the model resumes writing code (edit/write/bash).
 
 ```bash
 bun run scripts/perf-report.ts          # today's log, summary mode
@@ -370,7 +376,7 @@ src/
 ├── cli.ts                # argv parser (zero-dep)
 ├── api/
 │   ├── client.ts         # fetch + SSE streaming + tool-call delta accumulation
-│   ├── models.ts         # model catalog
+│   ├── models.ts         # model catalog (incl. auto-select)
 │   └── tokens.ts         # rough token estimator (CJK-aware)
 ├── agent/
 │   ├── loop.ts           # agentic loop: stream → execute tools → stream → …
@@ -379,7 +385,8 @@ src/
 ├── tools/                # each tool is its own module
 │   ├── types.ts          # Tool interface, OpenAI-schema mapping
 │   ├── registry.ts       # registry + executor
-│   ├── read_file.ts      # line-numbered file reader
+│   ├── read_file.ts      # line-numbered file reader (single file)
+│   ├── read_files.ts     # batch file reader (multiple files in one call)
 │   ├── write_file.ts     # create/overwrite
 │   ├── edit_file.ts      # exact string replacement, replaceAll support
 │   ├── bash.ts           # shell with workdir + timeout + truncation
@@ -393,10 +400,13 @@ src/
 │   ├── list_dir.ts      # single-level directory listing
 │   ├── task.ts          # launch a sub-agent (nested agent loop) for a subtask
 │   └── todo.ts          # in-memory task list the agent can read/update
+├── prompt/
+│   ├── builder.ts        # modular system-prompt builder (identity/tools/behavior/style/safety)
+│   └── harness.ts        # harness + truncation helpers for prompt content
 ├── ui/
 │   ├── theme.ts          # ANSI color helpers, zero dep
 │   ├── render.ts         # markdown, code blocks, panels, system messages
-│   ├── input.ts          # masked password, multi-line, y/n prompts
+│   ├── input.ts          # masked password, multi-line, y/n prompts, visual line wrapping
 │   └── spinner.ts        # interval-based animated spinner
 ├── session/
 │   ├── store.ts          # session save / load / list / delete / search / prune
@@ -417,6 +427,8 @@ src/
     ├── chat.ts           # default chat command (one-shot + REPL + slash cmds + json mode)
     ├── auth.ts           # auth subcommand
     ├── init.ts           # scaffolds an AGENTS.md project-instructions file
+    ├── mcp.ts            # mcp subcommand (add/list/remove servers)
+    ├── skill.ts          # skill subcommand (create/scaffold skills)
     ├── sessions.ts       # session listing subcommand
     └── config.ts         # config inspection subcommand
 ```
@@ -426,7 +438,7 @@ src/
 ```bash
 bun install
 bun run typecheck        # tsc --noEmit
-bun run lint            # static-analysis gate (tsc)
+bun run lint            # tsc --noEmit + biome check
 bun test                 # bun test runner
 bun run coverage        # tests with coverage report
 bun run dev              # watch mode for development
