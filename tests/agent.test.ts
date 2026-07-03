@@ -404,6 +404,96 @@ describe("runAgentLoop", () => {
     }
   });
 
+  it("generates a wrap-up summary when max iterations is hit with no output", async () => {
+    // Regression for the "NO output produced" cliff: when the budget runs out
+    // and finalText is still empty, the loop makes one more request WITHOUT
+    // tools so the model must answer in text — that summary becomes the
+    // finalText and is streamed to the caller. The user no longer has to ask
+    // "status?" to learn what happened.
+    const tools = registryWith(echoTool);
+    const perms = new PermissionManager({ mode: "auto" });
+
+    const mkEcho = (id: string) => sseData({
+      choices: [{ delta: { tool_calls: [{ index: 0, id, function: { name: "echo", arguments: '{"msg":"x"}' } }] } }],
+    });
+    // Two tool-call iterations exhaust a tiny budget (no final text); the
+    // third response is the wrap-up summary.
+    const r1 = sseResponse([mkEcho("c1")]);
+    const r2 = sseResponse([mkEcho("c2")]);
+    const r3 = sseResponse([
+      sseData({ choices: [{ delta: { content: "did A; " } }] }),
+      sseData({ choices: [{ delta: { content: "B remains" } }] }),
+      "data: [DONE]\n\n",
+    ]);
+
+    const deltas: string[] = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetchSequence([r1, r2, r3]);
+    try {
+      const result = await runAgentLoop(
+        [{ role: "user", content: "go" }],
+        {
+          apiKey: "sk-test",
+          model: "deepseek-chat",
+          reasoning: false,
+          maxIterations: 2,
+          tools,
+          permissions: perms,
+          onContentDelta: (d) => deltas.push(d),
+        },
+      );
+      // Two loop iterations + one extra wrap-up summary request.
+      expect(result.iterations).toBe(2);
+      expect(result.finalText).toBe("did A; B remains");
+      // The summary content was streamed to the caller via onContentDelta.
+      expect(deltas.join("")).toBe("did A; B remains");
+      // The summary is recorded as the last assistant message so resume/undo
+      // see something coherent instead of a blank turn.
+      const last = result.messages[result.messages.length - 1];
+      expect(last.role).toBe("assistant");
+      expect(last.content).toBe("did A; B remains");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("falls back to the warning when the wrap-up summary request fails", async () => {
+    // If the extra summary call itself errors, we must not crash — fall back
+    // to the plain "NO output produced" notice so the turn still ends cleanly.
+    const tools = registryWith(echoTool);
+    const perms = new PermissionManager({ mode: "auto" });
+
+    const mkEcho = (id: string) => sseData({
+      choices: [{ delta: { tool_calls: [{ index: 0, id, function: { name: "echo", arguments: '{"msg":"x"}' } }] } }],
+    });
+    const r1 = sseResponse([mkEcho("c1")]);
+    const r2 = sseResponse([mkEcho("c2")]);
+    // The wrap-up request returns a 500 → streamChatCompletion throws.
+    const rErr = new Response("boom", { status: 500 });
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetchSequence([r1, r2, rErr]);
+    try {
+      const result = await runAgentLoop(
+        [{ role: "user", content: "go" }],
+        {
+          apiKey: "sk-test",
+          model: "deepseek-chat",
+          reasoning: false,
+          maxIterations: 2,
+          tools,
+          permissions: perms,
+        },
+      );
+      expect(result.iterations).toBe(2);
+      // No summary could be produced; finalText stays empty but the turn did
+      // not throw.
+      expect(result.finalText).toBe("");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
   it("blocks only the abusive tool name, not other valid calls in the same turn", async () => {
     // Per-name abuse guard: once "nope" is blocked after 3 hits, a valid
     // echo call issued alongside it in the same iteration still executes —
