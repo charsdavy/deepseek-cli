@@ -488,8 +488,11 @@ export async function runAgentLoop(
       spinner.stop();
       spinner.start("summarizing…");
       try {
+        // Trim the conversation before the summary: tool results from the
+        // last iteration may have pushed messages past the context window.
+        const trimmed = trimToFit(messages, opts.maxContext);
         const summaryMessages: ChatMessage[] = [
-          ...messages,
+          ...trimmed.messages,
           {
             role: "system",
             content:
@@ -498,14 +501,19 @@ export async function runAgentLoop(
               "what is in flight, and what remains for the next turn. Be brief and concrete.",
           },
         ];
+        // Disable reasoning for the summary: we want a quick text response,
+        // not deep chain-of-thought thinking. With reasoning + max effort,
+        // the model can spend 60+ seconds thinking before the first token,
+        // hitting the watchdog timeout (120s first-byte) and falling through
+        // to the "NO output produced" fallback — the exact cliff we're
+        // trying to avoid.
         const gen = streamChatCompletion({
           apiKey: opts.apiKey,
           model: opts.model,
           messages: summaryMessages,
           temperature: opts.temperature,
-          reasoning: shouldReason,
-          reasoningEffort: effectiveEffort,
-          maxTokens: opts.maxTokens,
+          reasoning: false,
+          maxTokens: Math.min(opts.maxTokens ?? 4096, 1024),
           signal: opts.signal,
           baseUrl: opts.baseUrl,
         });
