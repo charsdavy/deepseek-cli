@@ -159,6 +159,45 @@ function isWideChar(c: number): boolean {
   );
 }
 
+/** Compute the visual layout of text on a terminal, accounting for
+ *  width-based line wrapping. Pure function for testability.
+ *  - totalLines: total visual terminal lines the rendered text occupies
+ *  - cursorVisualLine: 0-based visual line where the cursor sits
+ *  - cursorCol: column on that visual line where the cursor sits */
+export function computeVisualLayout(
+  buf: string,
+  cur: number,
+  promptWidth: number,
+  cols: number,
+): { totalLines: number; cursorVisualLine: number; cursorCol: number } {
+  const effectiveCols = Math.max(1, cols);
+  const allLines = buf.split("\n");
+  const beforeCursor = buf.slice(0, cur);
+  const beforeLines = beforeCursor.split("\n");
+  const cursorLogLine = beforeLines.length - 1;
+
+  let totalLines = 0;
+  let cursorVisualLine = 0;
+  let cursorCol = 0;
+
+  for (let i = 0; i < allLines.length; i++) {
+    const isFirst = i === 0;
+    const pW = isFirst ? promptWidth : 0;
+    const totalW = pW + visWidth(allLines[i]);
+    const vLines = Math.max(1, Math.ceil(totalW / effectiveCols));
+
+    if (i === cursorLogLine) {
+      const cursorW = pW + visWidth(beforeLines[i] || "");
+      cursorVisualLine = totalLines + Math.floor(cursorW / effectiveCols);
+      cursorCol = cursorW % effectiveCols;
+    }
+
+    totalLines += vLines;
+  }
+
+  return { totalLines, cursorVisualLine, cursorCol };
+}
+
 /** Read input (single- or multi-line). When the current line starts with `/`,
  *  matching slash commands are listed LIVE below the prompt and updated as the
  *  user types. Tab completes to the common prefix; Up/Down recall history;
@@ -211,6 +250,12 @@ export async function askMultiline(
     return m.slice(0, 12);
   };
 
+  /** Compute the visual layout of the current buffer on the terminal,
+   *  accounting for width-based line wrapping (CJK chars are 2 cols,
+   *  emoji are 2 cols, etc.). Delegates to the pure `computeVisualLayout`. */
+  const visualLayout = () =>
+    computeVisualLayout(buf, cur, visWidth(curPrompt), output.columns || 80);
+
   const render = (): void => {
     // Move up to the first displayed line (if multi-line was rendered).
     if (displayLines > 1) {
@@ -230,7 +275,13 @@ export async function askMultiline(
       for (let i = 1; i < lines.length; i++) {
         output.write(`\r\n\x1b[K${lines[i]}`);
       }
-      displayLines = lines.length;
+      // Account for terminal line wrapping: a single logical line that
+      // exceeds the terminal width visually occupies multiple rows.
+      // displayLines must reflect VISUAL lines, not logical lines, so the
+      // cursor-up at the top of render() correctly moves past all wrapped
+      // content. Otherwise each keystroke after wrapping leaves ghost copies
+      // of the prompt + text above, filling the screen with duplicates.
+      displayLines = visualLayout().totalLines;
     }
 
     const m = matches();
@@ -247,13 +298,15 @@ export async function askMultiline(
       const col = visWidth(curPrompt) + visWidth(pasteSummary);
       if (col > 0) output.write(`\x1b[${col}C`);
     } else {
-      const beforeCursor = buf.slice(0, cur);
-      const beforeLines = beforeCursor.split("\n");
-      const lineIdx = beforeLines.length - 1;
-      if (lineIdx > 0) output.write(`\x1b[${lineIdx}B`); // move down to cursor's line
-      const promptW = lineIdx === 0 ? visWidth(curPrompt) : 0;
-      const col = promptW + visWidth(beforeLines[lineIdx]);
-      if (col > 0) output.write(`\x1b[${col}C`);
+      // After writing all text the cursor is on the last visual line.
+      // Use the visual layout to navigate to the cursor's actual position,
+      // accounting for wrapped lines.
+      const layout = visualLayout();
+      const last = displayLines - 1;
+      const diff = layout.cursorVisualLine - last;
+      if (diff < 0) output.write(`\x1b[${-diff}A`);
+      else if (diff > 0) output.write(`\x1b[${diff}B`);
+      if (layout.cursorCol > 0) output.write(`\x1b[${layout.cursorCol}C`);
     }
   };
 
@@ -282,12 +335,14 @@ export async function askMultiline(
     }
     // Move the cursor to the last display line so the newline below starts
     // on a fresh row beneath all input content (important for multi-line
-    // input where the cursor may be on an earlier line).
+    // input and wrapped long lines where the cursor may be on an earlier
+    // visual line).
     if (!pasteSummary) {
-      const cursorLine = buf.slice(0, cur).split("\n").length - 1;
-      const lastLine = displayLines - 1;
-      if (cursorLine < lastLine) {
-        output.write(`\x1b[${lastLine - cursorLine}B`);
+      const layout = visualLayout();
+      const lastLine = layout.totalLines - 1;
+      const diff = lastLine - layout.cursorVisualLine;
+      if (diff > 0) {
+        output.write(`\x1b[${diff}B`);
       }
     }
     // Start a fresh line for subsequent output (spinner / reasoning / reply).
@@ -376,14 +431,14 @@ export async function askMultiline(
       if (fence) { submitLine(acc.replace(/\s+$/, "")); return; }
       fence = true;
       buf = ""; cur = 0;
-      output.write("\r\n"); curPrompt = paint.gray("› "); render();
+      output.write("\r\n"); displayLines = 1; curPrompt = paint.gray("› "); render();
       return;
     }
-    if (fence) { acc += buf + "\n"; buf = ""; cur = 0; output.write("\r\n"); curPrompt = paint.gray("› "); render(); return; }
+    if (fence) { acc += buf + "\n"; buf = ""; cur = 0; output.write("\r\n"); displayLines = 1; curPrompt = paint.gray("› "); render(); return; }
     if (trimmedEnd.endsWith("\\")) {
       acc += trimmedEnd.slice(0, -1) + "\n";
       buf = ""; cur = 0;
-      output.write("\r\n"); curPrompt = paint.gray("› "); render();
+      output.write("\r\n"); displayLines = 1; curPrompt = paint.gray("› "); render();
       return;
     }
     submitLine(acc + buf);

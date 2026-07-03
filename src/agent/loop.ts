@@ -477,15 +477,72 @@ export async function runAgentLoop(
   if (iterations >= maxIterations) {
     log.warn("max iterations reached", { maxIterations, finalTextLen: finalText.length });
     if (finalText.length === 0) {
-      // The turn produced no answer at all — typically a task that's too big
-      // for one loop, or a model stuck in a tool loop. Tell the user plainly
-      // rather than silently returning an empty response.
-      printSystem(
-        `max iterations (${maxIterations}) reached with NO output produced. ` +
-          `The task was likely too large for one turn, or the model looped. ` +
-          `Try splitting it into smaller steps (todo_write) and running them across turns.`,
-        "yellow",
-      );
+      // The turn produced no answer at all. Rather than silently returning an
+      // empty response — forcing the user to ask "status?" to learn anything
+      // — make one more request WITHOUT tools so the model must answer in
+      // plain text: a concise progress summary (done / in flight / remaining).
+      // Streamed to the user via onContentDelta and recorded as finalText so
+      // session resume, /undo, and /retry all see something coherent instead
+      // of a blank turn.
+      printSystem(`max iterations (${maxIterations}) reached — generating a wrap-up summary…`, "yellow");
+      spinner.stop();
+      spinner.start("summarizing…");
+      try {
+        const summaryMessages: ChatMessage[] = [
+          ...messages,
+          {
+            role: "system",
+            content:
+              "The iteration budget is exhausted and you produced no final answer. Stop calling tools. " +
+              "Based on the conversation so far, write a concise progress summary: what has been done, " +
+              "what is in flight, and what remains for the next turn. Be brief and concrete.",
+          },
+        ];
+        const gen = streamChatCompletion({
+          apiKey: opts.apiKey,
+          model: opts.model,
+          messages: summaryMessages,
+          temperature: opts.temperature,
+          reasoning: shouldReason,
+          reasoningEffort: effectiveEffort,
+          maxTokens: opts.maxTokens,
+          signal: opts.signal,
+          baseUrl: opts.baseUrl,
+        });
+        let summary = "";
+        for await (const chunk of gen) {
+          if (chunk.usage) {
+            lastUsage = {
+              promptTokens: chunk.usage.promptTokens ?? lastUsage?.promptTokens,
+              completionTokens: chunk.usage.completionTokens ?? lastUsage?.completionTokens,
+              totalTokens: chunk.usage.totalTokens ?? lastUsage?.totalTokens,
+            };
+          }
+          if (chunk.content) {
+            summary += chunk.content;
+            opts.onContentDelta?.(chunk.content);
+          }
+        }
+        spinner.stop();
+        finalText = summary;
+        messages.push({ role: "assistant", content: summary || null });
+        log.info("wrap-up summary generated", { summaryLen: summary.length, iteration: iterations });
+      } catch (e) {
+        spinner.stop();
+        const aborted = opts.signal?.aborted || (e instanceof Error && e.name === "AbortError");
+        if (aborted) {
+          log.info("wrap-up summary aborted", { iteration: iterations });
+          printSystem("interrupted", "yellow");
+        } else {
+          log.warn("wrap-up summary failed", { error: e instanceof Error ? e.message : String(e) });
+          printSystem(
+            `max iterations (${maxIterations}) reached with NO output produced. ` +
+              `The task was likely too large for one turn, or the model looped. ` +
+              `Try splitting it into smaller steps (todo_write) and running them across turns.`,
+            "yellow",
+          );
+        }
+      }
     } else {
       printSystem(`max iterations (${maxIterations}) reached — stopping agent.`, "yellow");
     }

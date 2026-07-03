@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { reduceEsc, reduceTurnInput, DOUBLE_ESC_WINDOW_MS, type TurnInputState } from "../src/ui/input.ts";
+import { reduceEsc, reduceTurnInput, computeVisualLayout, DOUBLE_ESC_WINDOW_MS, type TurnInputState } from "../src/ui/input.ts";
 
 const ESC = 0x1b;
 const BRACKET = 0x5b; // "[" — the CSI introducer for arrow keys
@@ -229,5 +229,94 @@ describe("reduceTurnInput", () => {
     const r3 = reduceTurnInput(new Uint8Array([0x0d]), r2.state, false, 1000); // Enter
     expect(r3.queuedText).toBe("hi");
     expect(r3.state.queued).toBe(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// computeVisualLayout — visual line counting with terminal wrapping.
+//
+// Bug: when a user types a long line (especially CJK text where each
+// character is 2 terminal columns), the line wraps across multiple
+// terminal rows. The old render() tracked displayLines as logical
+// newlines only (buf.split("\n").length), staying at 1 even though the
+// text occupied 3+ visual rows. The cursor-up before redraw didn't move
+// far enough, so old wrapped content was never cleared — each keystroke
+// wrote a fresh copy of the entire prompt + text below the stale content,
+// filling the screen with duplicates.
+// ═══════════════════════════════════════════════════════════════════
+describe("computeVisualLayout", () => {
+  it("returns 1 line for empty buffer", () => {
+    const r = computeVisualLayout("", 0, 5, 80);
+    expect(r.totalLines).toBe(1);
+    expect(r.cursorVisualLine).toBe(0);
+    expect(r.cursorCol).toBe(5); // prompt width
+  });
+
+  it("returns 1 line for short text that fits", () => {
+    const r = computeVisualLayout("hello", 5, 5, 80);
+    expect(r.totalLines).toBe(1);
+    expect(r.cursorVisualLine).toBe(0);
+    expect(r.cursorCol).toBe(10); // 5 prompt + 5 text
+  });
+
+  it("counts 2 visual lines when text wraps past terminal width", () => {
+    // prompt=5, text=76 cols → total 81 → ceil(81/80) = 2 lines
+    const text = "a".repeat(76);
+    const r = computeVisualLayout(text, 76, 5, 80);
+    expect(r.totalLines).toBe(2);
+    // cursor at end: 81 cols → floor(81/80)=1, col=81%80=1
+    expect(r.cursorVisualLine).toBe(1);
+    expect(r.cursorCol).toBe(1);
+  });
+
+  it("counts 3 visual lines for long CJK text (regression: was 1)", () => {
+    // Each CJK char = 2 cols. prompt=5 (👤=2 + space=1 + ›=1 + space=1).
+    // 40 CJK chars = 80 cols. Total = 85. ceil(85/40) = 3 lines on a 40-col terminal.
+    const text = "　".repeat(40); // fullwidth space (U+3000), width=2
+    const r = computeVisualLayout(text, 40, 5, 40);
+    expect(r.totalLines).toBe(3);
+    // cursor at end: 85 cols → floor(85/40)=2, col=85%40=5
+    expect(r.cursorVisualLine).toBe(2);
+    expect(r.cursorCol).toBe(5);
+  });
+
+  it("places cursor on the correct visual line when mid-text", () => {
+    // prompt=5, 80-col terminal. Text = 80 chars (80 cols).
+    // Total = 85 → 2 visual lines. Cursor at char 40 (45 cols from left).
+    // floor(45/80) = 0 → cursor on visual line 0, col 45.
+    const text = "a".repeat(80);
+    const r = computeVisualLayout(text, 40, 5, 80);
+    expect(r.totalLines).toBe(2); // ceil(85/80) = 2
+    expect(r.cursorVisualLine).toBe(0);
+    expect(r.cursorCol).toBe(45); // 5 + 40
+  });
+
+  it("handles logical newlines plus wrapping", () => {
+    // Two logical lines: "aaa…"(50 chars) and "bbb…"(50 chars)
+    // Line 0: prompt=5 + 50 = 55 → ceil(55/80)=1 visual line
+    // Line 1: 50 → ceil(50/80)=1 visual line
+    // Total = 2 visual lines. Cursor at end of line 1.
+    const buf = "a".repeat(50) + "\n" + "b".repeat(50);
+    const r = computeVisualLayout(buf, buf.length, 5, 80);
+    expect(r.totalLines).toBe(2);
+    expect(r.cursorVisualLine).toBe(1);
+    expect(r.cursorCol).toBe(50);
+  });
+
+  it("handles multiple logical lines where each wraps", () => {
+    // Two logical lines, each wrapping on a 40-col terminal.
+    // Line 0: prompt=5 + 79 chars = 84 → ceil(84/40)=3 visual lines
+    // Line 1: 79 chars = 79 → ceil(79/40)=2 visual lines
+    // Total = 5. Cursor at end: floor(79/40)=1 → line 3+1=4, col 79%40=39.
+    const buf = "a".repeat(79) + "\n" + "b".repeat(79);
+    const r = computeVisualLayout(buf, buf.length, 5, 40);
+    expect(r.totalLines).toBe(5);
+    expect(r.cursorVisualLine).toBe(4);
+    expect(r.cursorCol).toBe(39);
+  });
+
+  it("treats cols=0 as 1 to avoid division by zero", () => {
+    const r = computeVisualLayout("hello", 5, 5, 0);
+    expect(r.totalLines).toBe(10); // ceil(10/1) = 10
   });
 });
