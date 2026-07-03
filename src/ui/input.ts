@@ -438,6 +438,102 @@ export function reduceEsc(
   return { lastEsc: now, abort: false };
 }
 
+// ---- Turn-input pure reducer ----
+//
+// The logic inside watchTurnInput's onData handler, extracted as a pure
+// reducer so it can be unit-tested without a real TTY. Processes one
+// chunk of raw-mode stdin bytes and returns the new state + any side
+// effects the caller should perform (queue a prompt, update the type
+// buffer display, abort the turn, show the Esc hint).
+
+export interface TurnInputState {
+  buf: string;
+  queued: number;
+  lastEsc: number;
+  armed: boolean;
+}
+
+export interface TurnInputResult {
+  state: TurnInputState;
+  /** Non-null when the user pressed Enter with non-empty input — caller calls onQueued. */
+  queuedText: string | null;
+  /** Non-null when the type buffer changed — caller calls onType(buf, queuedCount). */
+  typeBuffer: string | null;
+  /** True when the user aborted (double-Esc or Ctrl-C) — caller calls onAbort + cleanup. */
+  aborted: boolean;
+  /** True when a first Esc was registered — caller shows the "(Esc again)" hint. */
+  escHint: boolean;
+}
+
+/**
+ * Pure reducer for turn-input processing. Given the inbound bytes, the
+ * current state, and whether the watcher is paused (e.g. during
+ * askQuestion for a permission prompt), returns the next state and any
+ * side-effect signals.
+ *
+ * When `paused` is true, ALL input is ignored — keystrokes go to
+ * readline (cooked mode) instead of being captured as queued prompts.
+ * This prevents the [Queued] y / [Queued] a bug where permission-prompt
+ * keystrokes were captured by the turn-input watcher.
+ */
+export function reduceTurnInput(
+  bytes: Uint8Array,
+  state: TurnInputState,
+  paused: boolean,
+  now: number,
+  windowMs = DOUBLE_ESC_WINDOW_MS,
+): TurnInputResult {
+  const idle: TurnInputResult = { state, queuedText: null, typeBuffer: null, aborted: false, escHint: false };
+
+  if (!state.armed || paused) return idle;
+
+  const b0 = bytes[0];
+
+  // --- Escape handling (double-Esc abort) ---
+  if (b0 === 0x1b) {
+    if (bytes.length >= 2 && bytes[1] === 0x5b) return idle; // CSI (arrows)
+    const esc = reduceEsc(bytes, state.lastEsc, now, windowMs);
+    if (esc.abort) {
+      return { state: { ...state, armed: false, lastEsc: 0 }, queuedText: null, typeBuffer: null, aborted: true, escHint: false };
+    }
+    return { state: { ...state, lastEsc: esc.lastEsc }, queuedText: null, typeBuffer: null, aborted: false, escHint: esc.lastEsc > 0 };
+  }
+
+  // Enter — queue the line
+  if (b0 === 0x0d || b0 === 0x0a) {
+    const text = state.buf.trim() ? state.buf : null;
+    const newQueued = text ? state.queued + 1 : state.queued;
+    const newBuf = "";
+    return {
+      state: { ...state, buf: newBuf, queued: newQueued },
+      queuedText: text,
+      typeBuffer: newBuf,
+      aborted: false,
+      escHint: false,
+    };
+  }
+
+  // Backspace / Delete
+  if (b0 === 0x7f || b0 === 0x08) {
+    if (state.buf.length === 0) return idle;
+    const newBuf = state.buf.slice(0, -1);
+    return { state: { ...state, buf: newBuf }, queuedText: null, typeBuffer: newBuf, aborted: false, escHint: false };
+  }
+
+  // Ctrl-C — abort
+  if (b0 === 0x03) {
+    return { state: { ...state, armed: false }, queuedText: null, typeBuffer: null, aborted: true, escHint: false };
+  }
+
+  // Other control chars: ignore
+  if (b0 < 0x20) return idle;
+
+  // Printable (UTF-8 ok): append to buffer
+  const s = Buffer.from(bytes).toString("utf-8");
+  const newBuf = state.buf + s;
+  return { state: { ...state, buf: newBuf }, queuedText: null, typeBuffer: newBuf, aborted: false, escHint: false };
+}
+
 /**
  * Install a raw-mode stdin listener that watches for a double-Escape and
  * invokes `onAbort` when it fires. Returns a cleanup function that detaches
@@ -516,67 +612,15 @@ export function watchTurnInput(
   }
   tty.resume();
 
-  let lastEsc = 0;
-  let armed = true;
-  let buf = "";
-  let queued = 0;
+  let state: TurnInputState = { buf: "", queued: 0, lastEsc: 0, armed: true };
 
   const onData = (data: Buffer): void => {
-    if (!armed || turnInputPaused) return;
-    const b0 = data[0];
-
-    // --- Escape handling (double-Esc abort) ---
-    if (b0 === 0x1b) {
-      // CSI sequence (arrows etc): not a real Esc
-      if (data.length >= 2 && data[1] === 0x5b) return;
-      const now = Date.now();
-      if (lastEsc > 0 && now - lastEsc < DOUBLE_ESC_WINDOW_MS) {
-        lastEsc = 0;
-        armed = false;
-        cleanup();
-        onAbort();
-        return;
-      }
-      lastEsc = now;
-      output.write("\r\n" + paint.yellow("  (Esc again to cancel)") + "\r\n");
-      return;
-    }
-
-    // --- Regular input ---
-    // Enter — queue the line
-    if (b0 === 0x0d || b0 === 0x0a) {
-      if (buf.trim()) {
-        queued++;
-        onQueued(buf);
-      }
-      buf = "";
-      onType(buf, queued);
-      return;
-    }
-
-    // Backspace / Delete
-    if (b0 === 0x7f || b0 === 0x08) {
-      if (buf.length > 0) {
-        buf = buf.slice(0, -1);
-        onType(buf, queued);
-      }
-      return;
-    }
-
-    // Ctrl-C — abort like a double-Esc
-    if (b0 === 0x03) {
-      armed = false;
-      cleanup();
-      onAbort();
-      return;
-    }
-
-    // Other control chars: ignore
-    if (b0 < 0x20) return;
-
-    // Printable (UTF-8 ok): append to buffer
-    buf += data.toString("utf-8");
-    onType(buf, queued);
+    const result = reduceTurnInput(data, state, turnInputPaused, Date.now());
+    state = result.state;
+    if (result.queuedText !== null) onQueued(result.queuedText);
+    if (result.typeBuffer !== null) onType(result.typeBuffer, state.queued);
+    if (result.escHint) output.write("\r\n" + paint.yellow("  (Esc again to cancel)") + "\r\n");
+    if (result.aborted) { cleanup(); onAbort(); }
   };
 
   const cleanup = (): void => {
