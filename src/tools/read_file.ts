@@ -1,5 +1,14 @@
 // read_file tool — read a file from the local filesystem, with optional
 // line offset and limit. Mirrors the behavior of Claude Code's Read tool.
+//
+// mtime+size LRU cache: production logs show the model issues read_file for
+// the SAME file across many turns (observed: PersistenceController.swift was
+// read 5x across 5 separate loops, several other Swift files read 3-4x).
+// Every repeated read re-stat + re-readFile + re-stream the entire file
+// content as a tool result back into messages, costing both disk I/O and
+// API prompt tokens for content that hasn't changed. The cache keys on
+// absPath + mtimeMs + size so an unchanged file always hits the cache; any
+// write to the file (mtimeMs moves) invalidates it.
 
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -8,6 +17,27 @@ import { lineNo, tag } from "../prompt/harness.ts";
 
 const MAX_BYTES = 200_000; // ~200KB hard ceiling per read
 const DEFAULT_LIMIT = 2000;
+const CACHE_MAX_ENTRIES = 32;
+
+interface CacheEntry {
+  mtimeMs: number;
+  size: number;
+  content: string;
+}
+
+const readFileCache = new Map<string, CacheEntry>();
+
+/** Track last-access order for FIFO eviction. Map preserves insertion order
+ *  in JS, so re-inserting on access via delete+set refreshes recency. */
+function touchCache(key: string, entry: CacheEntry): void {
+  readFileCache.delete(key);
+  readFileCache.set(key, entry);
+  if (readFileCache.size > CACHE_MAX_ENTRIES) {
+    // evict oldest entry (first key in insertion order)
+    const oldest = readFileCache.keys().next().value;
+    if (typeof oldest === "string") readFileCache.delete(oldest);
+  }
+}
 
 export const readFileTool: Tool = {
   name: "read_file",
@@ -70,17 +100,32 @@ export const readFileTool: Tool = {
       };
     }
 
+    // Cache hit on (path, mtimeMs, size) → skip disk read entirely. This
+    // is the hot path for cross-turn re-reads of unchanged files; otherwise
+    // every repeated read_file call re-reads the file and re-streams its
+    // full content into messages, bloating the prompt token budget.
+    const cached = readFileCache.get(abs);
     let content: string;
-    try {
-      content = await fs.readFile(abs, "utf-8");
-    } catch (e) {
-      // Could be a non-UTF8 / binary file
-      const msg = e instanceof Error ? e.message : String(e);
-      return {
-        ok: false,
-        content: `Could not read '${abs}' as text: ${msg}. May be binary — describe its purpose instead of reading.`,
-        error: "binary_or_unreadable",
-      };
+    let fromCache = false;
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      content = cached.content;
+      fromCache = true;
+      touchCache(abs, cached);
+    } else {
+      try {
+        content = await fs.readFile(abs, "utf-8");
+      } catch (e) {
+        // Could be a non-UTF8 / binary file
+        const msg = e instanceof Error ? e.message : String(e);
+        return {
+          ok: false,
+          content: `Could not read '${abs}' as text: ${msg}. May be binary — describe its purpose instead of reading.`,
+          error: "binary_or_unreadable",
+        };
+      }
+      // Populate cache so the next read of the same unchanged file skips disk.
+      const entry: CacheEntry = { mtimeMs: stat.mtimeMs, size: stat.size, content };
+      touchCache(abs, entry);
     }
 
     const lines = content.replace(/\r\n/g, "\n").split("\n");
@@ -97,7 +142,7 @@ export const readFileTool: Tool = {
     return {
       ok: true,
       content: `${tag("file", { path: abs }, rendered)}${suffix}`,
-      uiSummary: `read ${abs} (${shown}/${totalLines} lines)`,
+      uiSummary: `read ${abs} (${shown}/${totalLines} lines${fromCache ? ", cached" : ""})`,
     };
   },
 };

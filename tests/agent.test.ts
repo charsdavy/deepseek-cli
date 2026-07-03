@@ -486,9 +486,11 @@ describe("runAgentLoop", () => {
         },
       );
       expect(result.iterations).toBe(2);
-      // No summary could be produced; finalText stays empty but the turn did
-      // not throw.
-      expect(result.finalText).toBe("");
+      // The wrap-up summary request failed (500). The loop falls back to a
+      // local notice so session resume / /undo / /retry see something
+      // coherent instead of a blank turn. finalText now carries that notice.
+      expect(result.finalText).toContain("Max iterations (2) reached with NO model output produced");
+      expect(result.finalText).toContain("wrap-up summary request failed: DeepSeek API error 500: boom");
     } finally {
       globalThis.fetch = origFetch;
     }

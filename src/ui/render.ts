@@ -10,14 +10,46 @@ export { setOutputSilent } from "./theme.ts";
 // output. Using \r\n everywhere ensures lines start at col 0 in both raw and
 // cooked mode (in cooked mode the extra \r is a harmless no-op). The regex
 // \r?\n → \r\n handles both bare \n and existing \r\n without doubling.
+//
+// EPIPE guard: when stdout's downstream pipe goes away (user piped to `head`
+// that exited, terminal detached, or the user Ctrl-C'd while a readline
+// prompt is mid-refresh), Bun.stdout.write / process.stdout.write throw
+// EPIPE. Without a guard, each subsequent readline prompt refresh re-throws
+// and trips the global `uncaughtException` handler — observed in production
+// logs as 424 turns with no `agent loop end`. Catching it at the source and
+// flipping `stdoutBroken` to true makes every later write a silent no-op, so
+// the readline refresh loop stops spawning exceptions and the caller above
+// (the uncaughtException handler in index.ts) can exit cleanly.
+let stdoutBroken = false;
+
+function isEpipe(e: unknown): boolean {
+  return e instanceof Error && /EPIPE/.test(e.message);
+}
+
 export function streamWrite(text: string): void {
-  if (outputSilent) return;
-  Bun.stdout.write(text.replace(/\r?\n/g, "\r\n"));
+  if (outputSilent || stdoutBroken) return;
+  try {
+    Bun.stdout.write(text.replace(/\r?\n/g, "\r\n"));
+  } catch (e) {
+    if (isEpipe(e)) {
+      stdoutBroken = true;
+      return;
+    }
+    throw e;
+  }
 }
 
 export function writeLine(text = ""): void {
-  if (outputSilent) return;
-  process.stdout.write(text.replace(/\r?\n/g, "\r\n") + "\r\n");
+  if (outputSilent || stdoutBroken) return;
+  try {
+    process.stdout.write(text.replace(/\r?\n/g, "\r\n") + "\r\n");
+  } catch (e) {
+    if (isEpipe(e)) {
+      stdoutBroken = true;
+      return;
+    }
+    throw e;
+  }
 }
 
 export function blank(): void {

@@ -3,7 +3,7 @@
 // until the model stops calling tools. This is the heart of the agentic CLI.
 
 import type { ChatMessage, ToolDef, TokenUsage } from "../api/client.ts";
-import { DeepSeekError, DeepSeekUnauthorized, streamChatCompletion, withRetry } from "../api/client.ts";
+import { DeepSeekUnauthorized, streamChatCompletion } from "../api/client.ts";
 import { isReasoningModel } from "../api/models.ts";
 import { estimateConversationTokens } from "../api/tokens.ts";
 import { trimToFit } from "./context.ts";
@@ -249,8 +249,19 @@ export async function runAgentLoop(
       }
       spinner.stop();
       const msg = e instanceof Error ? e.message : String(e);
-      log.error("api error", { error: msg, iteration: iterations, status: (e as { status?: number }).status });
+      const eStatus = (e as { status?: number }).status;
+      log.error("api error", { error: msg, iteration: iterations, status: eStatus });
       printError(`API error: ${msg}`);
+      // 5xx is upstream fault — break the loop (no automatic retry) so we
+      // don't re-send the entire (potentially huge) prompt and burn tokens
+      // for a request that will likely fail again. Surface a plain-text
+      // nudge so the user knows it's server-side and a manual re-run is fine.
+      if (typeof eStatus === "number" && eStatus >= 500 && eStatus < 600) {
+        printSystem(
+          `Upstream ${eStatus} — server-side fault. Stopped without auto-retry to avoid wasting tokens. Re-run your request manually when the upstream recovers.`,
+          "yellow",
+        );
+      }
       // Stop the loop on unrecoverable errors but return partial state.
       break;
     } finally {
@@ -543,12 +554,20 @@ export async function runAgentLoop(
           printSystem("interrupted", "yellow");
         } else {
           log.warn("wrap-up summary failed", { error: e instanceof Error ? e.message : String(e) });
-          printSystem(
-            `max iterations (${maxIterations}) reached with NO output produced. ` +
-              `The task was likely too large for one turn, or the model looped. ` +
-              `Try splitting it into smaller steps (todo_write) and running them across turns.`,
-            "yellow",
-          );
+          // Persist a local fallback so session resume / /undo / /retry see
+          // something coherent instead of a blank turn. Without this, a
+          // failed wrap-up summary (observed: API 500 "boom") left finalText
+          // empty and the assistant turn's messages slot silent — the next
+          // turn's messages started with no assistant reply at all, pushing
+          // the model to re-loop the same investigation.
+          const fallback =
+            `Max iterations (${maxIterations}) reached with NO model output produced. ` +
+            `The task was likely too large for one turn, or the model looped. ` +
+            `Try splitting it into smaller steps (todo_write) and running them across turns. ` +
+            `(wrap-up summary request failed: ${e instanceof Error ? e.message : String(e)})`;
+          printSystem(fallback, "yellow");
+          finalText = fallback;
+          messages.push({ role: "assistant", content: fallback });
         }
       }
     } else {
@@ -728,19 +747,4 @@ export function makeStreamRenderer(opts: StreamRenderOptions) {
   };
 }
 
-// Helper exposed for the receipt of nicer UI in chat commands:
-// wraps a promise with a spinner that auto-stops on completion.
-export async function withSpinnerAndRetry<T>(
-  label: string,
-  fn: () => Promise<T>,
-): Promise<T> {
-  spinner.start(label);
-  try {
-    return await withRetry(fn);
-  } finally {
-    spinner.stop();
-  }
-}
-
 void estimateConversationTokens; // referenced indirectly through context
-void DeepSeekError;
