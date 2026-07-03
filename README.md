@@ -17,7 +17,7 @@ The CLI pairs streaming chat completions with **tool calling** — the model can
 - **14 built-in tools**: `read_file`, `read_files`, `write_file`, `edit_file`, `bash`, `glob`, `grep`, `web_fetch`, `web_search`, `git_diff`, `git_status`, `list_dir`, `task`, `todo_write`.
 - **Sub-agents** — the `task` tool spawns nested agent loops; independent subtasks run in **parallel** when issued together.
 - **MCP support** — connect Model Context Protocol servers (stdio) and use their tools alongside the built-ins; toggle servers per-session with `/mcp`.
-- **Skills** — load specialized instruction packs from deepseek **and** Claude Code / Codex / codemaker skill dirs (both flat `<name>.md` and directory `<name>/SKILL.md` layouts, incl. symlinked); pick which are active with `/skill`.
+- **Skills** — load specialized instruction packs from deepseek **and** Claude Code / Codex skill dirs (both flat `<name>.md` and directory `<name>/SKILL.md` layouts, incl. symlinked); pick which are active with `/skill`.
 - **`@file` references** — mention `@path/to/file` in a prompt and its contents are attached inline.
 - **Prompt history** — Up/Down recalls previous prompts (persisted across sessions).
 - **Parallel tool execution** — multiple independent tool calls in one turn run concurrently.
@@ -174,7 +174,7 @@ Drop one of these into your repo root and the agent will fold its contents into 
 
 Skills are reusable instruction packs (markdown files) that specialize the agent for a task domain. When a skill is **active**, its contents are appended to the system prompt before your project instructions (so repo rules still win). Activate them per-session with the `/skill` command.
 
-Skill files are discovered from the deepseek, Claude Code, Codex, and codemaker directories (global + project each), supporting **both layouts**: flat `<name>.md` (what `deepseek skill create` writes) and the directory form `<name>/SKILL.md` used by Claude Code/codemaker (symlinked skill dirs are followed). On a name clash the deepseek copy wins. Global dirs honor each tool's relocation env: `DEEPSEEK_SKILLS_DIR`, `CLAUDE_CONFIG_DIR` (→ `~/.claude`), `CODEX_HOME` (→ `~/.codex`), `CODEMAKER_HOME` (→ `~/.codemaker`).
+Skill files are discovered from the deepseek, Claude Code, and Codex directories (global + project each), supporting **both layouts**: flat `<name>.md` (what `deepseek skill create` writes) and the directory form `<name>/SKILL.md` used by Claude Code/Codex (symlinked skill dirs are followed). On a name clash the deepseek copy wins. Global dirs honor each tool's relocation env: `DEEPSEEK_SKILLS_DIR`, `CLAUDE_CONFIG_DIR` (→ `~/.claude`), `CODEX_HOME` (→ `~/.codex`).
 
 | Location                                  | Scope/source    |
 | ----------------------------------------- | --------------- |
@@ -184,8 +184,6 @@ Skill files are discovered from the deepseek, Claude Code, Codex, and codemaker 
 | `<repo>/.claude/skills/<name>/SKILL.md`   | Claude Code     |
 | `~/.codex/skills/<name>/SKILL.md`         | Codex           |
 | `<repo>/.codex/skills/<name>/SKILL.md`    | Codex           |
-| `~/.codemaker/skills/<name>/SKILL.md`     | codemaker       |
-| `<repo>/.codemaker/skills/<name>/SKILL.md`| codemaker       |
 
 ```bash
 # scaffold a skill (codex-style template: frontmatter + When/Instructions/Examples/Constraints)
