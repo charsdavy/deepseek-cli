@@ -409,7 +409,12 @@ export async function askMultiline(
     if (b0 === 0x09) { tabComplete(); return; } // tab
     if (b0 < 0x20) { render(); return; } // other control: ignore
     // Printable (UTF-8 ok): insert at cursor.
-    const s = data.toString("utf-8");
+    // Normalize \r to \n: pasted content (terminal progress output,
+    // Windows \r\n line endings, old-Mac \r) can contain carriage returns
+    // that, if left as-is, move the cursor to col 0 during render() and
+    // overwrite the prompt emoji (👤) with whatever text follows the \r
+    // on the same line — making the icon disappear.
+    const s = data.toString("utf-8").replace(/\r\n?/g, "\n");
     // Detect a multi-line paste (bulk data with many newlines). Show a
     // compact summary instead of flooding the terminal with pasted lines.
     const lineCount = (s.match(/\n/g) || []).length;
