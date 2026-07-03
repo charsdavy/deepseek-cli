@@ -8,6 +8,34 @@ import { paint } from "./theme.ts";
 let rl: readline.Interface | null = null;
 let savedRawMode: boolean | null = null;
 
+// ---- Turn input watcher pause/resume ----
+//
+// watchTurnInput keeps stdin in raw mode during an AI turn so it can
+// capture queued prompts. But when a blocking prompt (askQuestion /
+// askYesNo — e.g. tool permission approval) needs user input, the
+// keystrokes must go to readline, not to the queue. These flags let
+// askQuestion temporarily pause the watcher without tearing it down.
+
+let turnInputActive = false;
+let turnInputPaused = false;
+
+/** Pause the turn-input watcher so keystrokes go to readline (cooked mode)
+ *  instead of being captured as queued prompts. No-op when no turn is active. */
+function pauseTurnInput(): void {
+  if (!turnInputActive) return;
+  turnInputPaused = true;
+  const tty = input as NodeJS.ReadStream & { setRawMode?: (m: boolean) => void };
+  tty.setRawMode?.(false);
+}
+
+/** Resume the turn-input watcher (re-enter raw mode, accept queued prompts again). */
+function resumeTurnInput(): void {
+  if (!turnInputActive) return;
+  turnInputPaused = false;
+  const tty = input as NodeJS.ReadStream & { setRawMode?: (m: boolean) => void };
+  tty.setRawMode?.(true);
+}
+
 function getRl(): readline.Interface {
   if (!rl) {
     rl = readline.createInterface({ input, output, terminal: true });
@@ -17,11 +45,17 @@ function getRl(): readline.Interface {
 }
 
 export async function askQuestion(prompt: string): Promise<string> {
-  const r = getRl();
-  // Ensure the cursor is visible — the spinner may have hidden it with
-  // \x1b[?25l, and readline doesn't restore it on its own.
-  process.stdout.write("\x1b[?25h");
-  return (await r.question(prompt)).trim();
+  // Pause the turn-input watcher so keystrokes go to readline, not the queue.
+  pauseTurnInput();
+  try {
+    const r = getRl();
+    // Ensure the cursor is visible — the spinner may have hidden it with
+    // \x1b[?25l, and readline doesn't restore it on its own.
+    process.stdout.write("\x1b[?25h");
+    return (await r.question(prompt)).trim();
+  } finally {
+    resumeTurnInput();
+  }
 }
 
 /** Read a single line, hiding the input (password-style). */
@@ -488,7 +522,7 @@ export function watchTurnInput(
   let queued = 0;
 
   const onData = (data: Buffer): void => {
-    if (!armed) return;
+    if (!armed || turnInputPaused) return;
     const b0 = data[0];
 
     // --- Escape handling (double-Esc abort) ---
@@ -552,8 +586,11 @@ export function watchTurnInput(
     } catch {
       /* ignore */
     }
+    turnInputActive = false;
+    turnInputPaused = false;
   };
 
+  turnInputActive = true;
   tty.on("data", onData);
   return cleanup;
 }

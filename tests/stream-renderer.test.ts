@@ -13,7 +13,6 @@ function captureStdout(): { captured: string; restore: () => void } {
     return true;
   }) as typeof process.stdout.write;
 
-  // streamWrite in render.ts uses Bun.stdout.write (returns Promise<number>).
   const origBunWrite = Bun.stdout.write.bind(Bun.stdout);
   (Bun.stdout as { write: (chunk: string | Uint8Array) => Promise<number> }).write = ((
     chunk: string | Uint8Array,
@@ -33,7 +32,6 @@ function captureStdout(): { captured: string; restore: () => void } {
   };
 }
 
-// Strip ANSI escape sequences for readable assertions.
 function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
 }
@@ -52,40 +50,24 @@ describe("makeStreamRenderer", () => {
   // ═══════════════════════════════════════════════════════════════════
   // Bug 2: onReasoningDelta must always stop the spinner, even when
   // inReasoning is stale true from a previous iteration.
-  //
-  // Scenario: iteration 1 has reasoning → tools (no content). inReasoning
-  // stays true. The agent loop re-starts "thinking…" spinner at the top
-  // of iteration 2. When reasoning deltas arrive, the OLD code skipped
-  // spinner.stop() because inReasoning was already true, so the spinner's
-  // 80ms render() clobbered the reasoning text.
   // ═══════════════════════════════════════════════════════════════════
   it("onReasoningDelta stops the spinner even when inReasoning is stale true (Bug 2)", () => {
     const cap = captureStdout();
     const renderer = makeStreamRenderer({ showReasoning: true, model: "test-model" });
     try {
-      // --- Iteration 1: reasoning → (no content, simulate tools next) ---
-
-      // Spinner is started by the agent loop at the top of each iteration.
+      // --- Iteration 1 ---
       spinner.start("thinking…");
       expect(spinner.isActive()).toBe(true);
-
-      // First reasoning delta: stops spinner, writes header + text.
-      renderer.onReasoningDelta("thinking about the task");
+      // Delta with \n so it's output immediately (reasoning is line-buffered).
+      renderer.onReasoningDelta("thinking about the task\n");
       expect(spinner.isActive()).toBe(false);
       expect(stripAnsi(cap.captured)).toContain("reasoning");
       expect(stripAnsi(cap.captured)).toContain("thinking about the task");
 
-      // --- Simulate tools finishing, loop back to iteration 2 ---
-
-      // The agent loop re-starts the spinner at the top of the next iteration.
-      // inReasoning is still true from iteration 1 (no content reset it).
+      // --- Iteration 2: spinner re-started, inReasoning still true ---
       spinner.start("thinking…");
       expect(spinner.isActive()).toBe(true);
-
-      // Second reasoning delta: MUST stop the spinner again.
-      // Bug 2: the old code skipped spinner.stop() because inReasoning was
-      // already true, so the spinner stayed active and clobbered the text.
-      renderer.onReasoningDelta("more thinking in iteration 2");
+      renderer.onReasoningDelta("more thinking in iteration 2\n");
       expect(spinner.isActive()).toBe(false);
       expect(stripAnsi(cap.captured)).toContain("more thinking in iteration 2");
     } finally {
@@ -98,13 +80,12 @@ describe("makeStreamRenderer", () => {
     const cap = captureStdout();
     const renderer = makeStreamRenderer({ showReasoning: true, model: "m" });
     try {
-      renderer.onReasoningDelta("chunk1");
-      renderer.onReasoningDelta(" chunk2");
+      renderer.onReasoningDelta("chunk1\n");
+      renderer.onReasoningDelta("chunk2\n");
       const plain = stripAnsi(cap.captured);
       // Header appears once.
       const headerCount = (plain.match(/reasoning/g) || []).length;
       expect(headerCount).toBe(1);
-      // Both chunks appear.
       expect(plain).toContain("chunk1");
       expect(plain).toContain("chunk2");
     } finally {
@@ -113,20 +94,57 @@ describe("makeStreamRenderer", () => {
     }
   });
 
-  it("onContentDelta writes a label after reasoning", () => {
+  // ═══════════════════════════════════════════════════════════════════
+  // Reasoning is line-buffered: partial lines (no \n) are NOT output
+  // until a newline arrives or flush()/end() is called. The cursor rests
+  // at col 0 of the empty line below the last complete line instead of
+  // trailing along with every character fragment.
+  // ═══════════════════════════════════════════════════════════════════
+  it("reasoning buffers partial lines — cursor doesn't trail mid-line", () => {
+    const cap = captureStdout();
+    const renderer = makeStreamRenderer({ showReasoning: true, model: "m" });
+    try {
+      // Header IS output immediately (writeLine).
+      renderer.onReasoningDelta("partial text");
+      // "partial text" has no \n → buffered, NOT output.
+      expect(stripAnsi(cap.captured)).toContain("reasoning"); // header
+      expect(stripAnsi(cap.captured)).not.toContain("partial text");
+
+      // Complete line arrives → both fragments output as one line.
+      renderer.onReasoningDelta(" continues\n");
+      const plain = stripAnsi(cap.captured);
+      expect(plain).toContain("partial text continues");
+
+      // Another partial — buffered again.
+      const lenAfter = cap.captured.length;
+      renderer.onReasoningDelta("not yet");
+      expect(cap.captured.length).toBe(lenAfter); // nothing new written
+
+      // flush() outputs the remaining partial line.
+      renderer.flush();
+      expect(stripAnsi(cap.captured)).toContain("not yet");
+    } finally {
+      renderer.end();
+      cap.restore();
+    }
+  });
+
+  it("onContentDelta flushes remaining reasoning before label", () => {
     const cap = captureStdout();
     const renderer = makeStreamRenderer({ showReasoning: true, model: "mymodel" });
     try {
       spinner.start("thinking…");
-      // Reasoning first
+      // Partial reasoning — buffered, not output.
       renderer.onReasoningDelta("let me think");
+      expect(stripAnsi(cap.captured)).not.toContain("let me think");
       expect(spinner.isActive()).toBe(false);
 
-      // Then content — should print a label line + the content.
+      // Content arrives — flushes the partial reasoning, then writes label.
       renderer.onContentDelta("Hello world\n");
       const plain = stripAnsi(cap.captured);
-      expect(plain).toContain("mymodel");
-      expect(plain).toContain("Hello world");
+      expect(plain).toContain("let me think"); // flushed
+      expect(plain).toContain("mymodel"); // label
+      expect(plain).toContain("Hello world"); // content
     } finally {
       renderer.end();
       cap.restore();
@@ -152,7 +170,7 @@ describe("makeStreamRenderer", () => {
     const renderer = makeStreamRenderer({ showReasoning: false, model: "m" });
     try {
       spinner.start("thinking…");
-      renderer.onReasoningDelta("secret thoughts");
+      renderer.onReasoningDelta("secret thoughts\n");
       spinner.stop();
       const plain = stripAnsi(cap.captured);
       expect(plain).not.toContain("secret thoughts");
@@ -163,28 +181,22 @@ describe("makeStreamRenderer", () => {
     }
   });
 
-  // ═══════════════════════════════════════════════════════════════════
-  // Multi-iteration scenario: reasoning → tools → reasoning → content.
-  // This is the full flow that was broken.
-  // ═══════════════════════════════════════════════════════════════════
   it("full multi-iteration flow: reasoning → tools → reasoning → content", () => {
     const cap = captureStdout();
     const renderer = makeStreamRenderer({ showReasoning: true, model: "test" });
     try {
       // Iteration 1: reasoning → tools (no content)
       spinner.start("thinking…");
-      renderer.onReasoningDelta("iter1 reasoning");
+      renderer.onReasoningDelta("iter1 reasoning\n");
       expect(spinner.isActive()).toBe(false);
 
-      // Tools execute (renderer.flush is called before tool markers)
       renderer.flush();
       spinner.startTool("running tool…");
       spinner.stop();
-      // Loop back to iteration 2
 
       // Iteration 2: reasoning → content
       spinner.start("thinking…");
-      renderer.onReasoningDelta("iter2 reasoning");
+      renderer.onReasoningDelta("iter2 reasoning\n");
       expect(spinner.isActive()).toBe(false);
 
       renderer.onContentDelta("final answer\n");
@@ -206,11 +218,13 @@ describe("makeStreamRenderer", () => {
     const renderer = makeStreamRenderer({ showReasoning: true, model: "m" });
     try {
       renderer.onReasoningDelta("unfinished reasoning without newline");
-      // end() should write a newline to move to a fresh line
+      // Partial — not output yet.
+      expect(stripAnsi(cap.captured)).not.toContain("unfinished reasoning");
       const lenBeforeEnd = cap.captured.length;
       renderer.end();
       const tail = cap.captured.slice(lenBeforeEnd);
-      // Should contain at least one newline to end the reasoning line.
+      // Should contain the flushed text + a newline.
+      expect(stripAnsi(tail)).toContain("unfinished reasoning without newline");
       expect(tail).toContain("\n");
     } finally {
       cap.restore();
@@ -224,7 +238,6 @@ describe("makeStreamRenderer", () => {
       renderer.onContentDelta("```ts\nconst x = 1;\n");
       renderer.end();
       const plain = stripAnsi(cap.captured);
-      // The closing fence marker should be present.
       expect(plain).toContain("└");
     } finally {
       cap.restore();

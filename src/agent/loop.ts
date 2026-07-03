@@ -557,6 +557,7 @@ export function makeStreamRenderer(opts: StreamRenderOptions) {
   let started = false;
   let inReasoning = false;
   let lineBuf = "";
+  let reasonBuf = "";
   const md = new StreamMarkdown();
   const label = opts.model ?? "DeepSeek";
   const labelLine = () => writeLine(`${paint.bright.green(symbol.robot)} ${paint.bold(paint.green(label))}:`);
@@ -570,13 +571,30 @@ export function makeStreamRenderer(opts: StreamRenderOptions) {
     }
   }
 
+  /** Output complete reasoning lines from reasonBuf. Partial lines (no
+   *  trailing \n) stay buffered so the cursor doesn't trail mid-line —
+   *  it rests at col 0 of the empty line below the last complete line. */
+  function flushReasoning(): void {
+    let nl: number;
+    while ((nl = reasonBuf.indexOf("\n")) >= 0) {
+      const line = reasonBuf.slice(0, nl);
+      reasonBuf = reasonBuf.slice(nl + 1);
+      process.stdout.write(paint.dim(line) + "\r\n");
+    }
+  }
+
+  /** Flush any remaining partial reasoning line (no trailing \n). */
+  function flushReasoningTail(): void {
+    if (reasonBuf) {
+      process.stdout.write(paint.dim(reasonBuf) + "\r\n");
+      reasonBuf = "";
+    }
+  }
+
   return {
     onContentDelta(delta: string) {
       // The agent loop restarts the "thinking…" spinner at the top of every
-      // iteration. In iteration 2+ the `started` flag is already true from
-      // a previous iteration, so the `!started` branch below is skipped —
-      // but the spinner is still active and would clobber content lines
-      // every 80ms. Always stop it first; stop() is a no-op when idle.
+      // iteration. Always stop it first; stop() is a no-op when idle.
       spinner.stop();
       if (!started) {
         writeLine();
@@ -584,6 +602,9 @@ export function makeStreamRenderer(opts: StreamRenderOptions) {
         started = true;
         inReasoning = false;
       } else if (inReasoning && opts.showReasoning) {
+        // Flush any partial reasoning line, then add a blank separator
+        // before the model's reply label.
+        flushReasoningTail();
         writeLine();
         labelLine();
         inReasoning = false;
@@ -595,38 +616,37 @@ export function makeStreamRenderer(opts: StreamRenderOptions) {
       if (!opts.showReasoning) return;
       // Always stop the spinner — the agent loop re-starts "thinking…" at
       // the top of every iteration, so it may be active even when
-      // inReasoning is still true from a previous iteration that had
-      // reasoning → tools (no content). Without this, the spinner's 80ms
-      // render() clobbers reasoning text (garbled display). Mirrors
-      // onContentDelta, which always stops the spinner first.
+      // inReasoning is still true from a previous iteration.
       spinner.stop();
       if (!inReasoning) {
         writeLine(`${paint.gray(`${symbol.brain} reasoning:`)}`);
         inReasoning = true;
         started = true;
       }
-      process.stdout.write(paint.dim(delta).replace(/\n/g, "\r\n"));
+      // Buffer and output only complete lines. The cursor rests at col 0
+      // of the empty line below the last output line instead of trailing
+      // along with every character fragment.
+      reasonBuf += delta;
+      flushReasoning();
     },
     /** Flush any pending partial line to stdout. Called by the agent loop
-     *  before showing a tool marker so unflushed content from the model's
-     *  last delta (which may not end with \n) is displayed instead of
-     *  getting concatenated with the next iteration's content. */
+     *  before showing a tool marker so unflushed content/reasoning from the
+     *  model's last delta (which may not end with \n) is displayed instead
+     *  of getting concatenated with the next iteration's content. */
     flush() {
+      flushReasoningTail();
       if (lineBuf) {
         streamWrite(md.flush(lineBuf) + "\n");
         lineBuf = "";
       }
     },
     end() {
-      // If reasoning was the last output and didn't end with a newline,
-      // move to a fresh line so the cursor is at col 0 for subsequent
-      // output (prompts, separators, etc.). Reasoning is written raw via
-      // process.stdout.write so it may stop mid-line.
+      // Flush any remaining partial reasoning line.
       if (inReasoning) {
-        writeLine();
+        flushReasoningTail();
         inReasoning = false;
       }
-      // Flush any remaining partial line
+      // Flush any remaining partial content line
       if (lineBuf) {
         streamWrite(md.flush(lineBuf) + "\n");
         lineBuf = "";
