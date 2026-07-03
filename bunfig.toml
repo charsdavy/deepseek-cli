@@ -5,3 +5,4 @@ auto = "fallback"
 
 [test]
 root = "./tests"
+preload = ["./tests/setup.ts"]

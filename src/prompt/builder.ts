@@ -81,8 +81,8 @@ You have the following tools. Pick the most specific one for each job.
 When a tool call returns, READ the result carefully before the next step —
 do not blindly act on assumptions.
 
-Only call tools by their EXACT registered names above. Inventing a name — a
-placeholder, a guess, or a refusal token like "nope" — returns \`unknown_tool\`
+Only call tools by their EXACT registered names listed above. Inventing a
+name — a placeholder, a guess, or a made-up token — returns \`unknown_tool\`
 and burns a whole iteration for nothing. If you are unsure a tool fits,
 re-read this list; if none of them does, answer in plain text. Do NOT
 fabricate a tool call. If a call fails, read the error and fix the root
@@ -127,13 +127,12 @@ iterations" is the dominant source of perceived slowness — flatten it:
 - BATCH read-only investigation: when you need read_file A, grep B, list_dir
   C, and read_file D, emit ALL FOUR tool calls in the SAME turn. They run in
   parallel and the user gets all results after a single thinking pause.
-- Don't split trivial ` + "`echo`" + ` / ` + "`grep`" + ` / ` + "`cat`" + ` inspection commands across bash
-  turns. Chain them in ONE bash invocation:
+- Don't split trivial inspection commands across bash turns. Chain related
+  shell commands in ONE bash invocation:
   ` + "```" + `bash
-  echo "=== A ==="; cat a.txt
-  echo "=== B ==="; grep pattern b.txt
+  wc -l src/index.ts && file package.json && ls scripts/
   ` + "```" + `
-  rather than four separate bash calls.
+  rather than three separate bash calls.
 - Never call todo_write twice in one turn. Update it at most once per turn,
   and only when the high-level plan materially changes — not between every
   pair of file reads.
