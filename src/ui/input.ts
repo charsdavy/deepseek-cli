@@ -13,22 +13,33 @@ let savedRawMode: boolean | null = null;
 // watchTurnInput keeps stdin in raw mode during an AI turn so it can
 // capture queued prompts. But when a blocking prompt (askQuestion /
 // askYesNo — e.g. tool permission approval) needs user input, the
-// keystrokes must go to readline, not to the queue. These flags let
-// askQuestion temporarily pause the watcher without tearing it down.
+// keystrokes must go to readline, not to the queue. The `turnInputPaused`
+// flag tells reduceTurnInput to return idle (ignore all input) so
+// keystrokes are effectively routed to readline only.
+//
+// We do NOT toggle raw mode here. Switching to cooked mode while
+// readline (created with terminal: true) is still active causes a
+// double-echo bug: the terminal driver echoes the character AND readline
+// echoes it, producing duplicate output (e.g. typing 'a' shows two 'a'
+// lines on the Approve prompt). In raw mode, the terminal driver does
+// not echo, and readline handles echo on its own — single echo, no
+// duplication. This works because reduceTurnInput checks `paused` and
+// ignores all bytes, so the watcher captures nothing during the pause.
 
 let turnInputActive = false;
 let turnInputPaused = false;
 
-/** Pause the turn-input watcher so keystrokes go to readline (cooked mode)
- *  instead of being captured as queued prompts. No-op when no turn is active. */
+/** Pause the turn-input watcher so keystrokes go to readline instead of
+ *  being captured as queued prompts. Does NOT change raw mode — the
+ *  `turnInputPaused` flag is sufficient (reduceTurnInput returns idle).
+ *  No-op when no turn is active. */
 function pauseTurnInput(): void {
   if (!turnInputActive) return;
   turnInputPaused = true;
-  const tty = input as NodeJS.ReadStream & { setRawMode?: (m: boolean) => void };
-  tty.setRawMode?.(false);
 }
 
-/** Resume the turn-input watcher (re-enter raw mode, accept queued prompts again). */
+/** Resume the turn-input watcher. Re-asserts raw mode as a safety net
+ *  (in case readline or askHidden changed it) and clears the pause flag. */
 function resumeTurnInput(): void {
   if (!turnInputActive) return;
   turnInputPaused = false;
