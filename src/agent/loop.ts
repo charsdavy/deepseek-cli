@@ -165,6 +165,30 @@ export async function runAgentLoop(
       ephemeralSystems.push(nudge);
     }
 
+    // Token-budget countdown: when the remaining operational budget drops
+    // below ~20% of the max, inject a one-shot reminder so the model knows
+    // it's approaching the context limit and can prioritize lean tools.
+    // Different from the context-nudge (which fires once at >50k); this fires
+    // when context is getting tight (<12k remaining for default 60k budget).
+    if (!contextNudgeShown && trimmed.tokensAfter > 0) {
+      const budgetRemaining = (opts.maxContext ?? 60_000) - trimmed.tokensAfter;
+      const lowThreshold = Math.min(12_000, (opts.maxContext ?? 60_000) * 0.2);
+      if (budgetRemaining < lowThreshold && budgetRemaining > 0) {
+        contextNudgeShown = true;
+        log.info("token countdown shown", { budgetRemaining, tokensAfter: trimmed.tokensAfter });
+        const nudge: ChatMessage = {
+          role: "system",
+          content:
+            `Context budget running low (~${Math.round(budgetRemaining / 1000)}k tokens remaining). ` +
+            `Stop re-reading files already in context. Use grep/glob for lookups. ` +
+            `Delegate new investigations to \`task\` sub-agents. ` +
+            `Finish the current unit of work and produce an answer before the budget is exhausted.`,
+        };
+        messages.push(nudge);
+        ephemeralSystems.push(nudge);
+      }
+    }
+
     // Wrap-up nudge: when the iteration budget is running low, steer the model
     // toward finishing with a usable answer instead of running off the cap
     // with an empty finalText (observed: 4 turns hit iter=30 with no output).
