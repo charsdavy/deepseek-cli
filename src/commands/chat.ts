@@ -10,6 +10,7 @@ import { estimateConversationTokens } from "../api/tokens.ts";
 import { ensureDirs, getOrSetupApiKey, loadConfig, saveConfig } from "../config/config.ts";
 import { loadProjectInstructions } from "../config/instructions.ts";
 import { buildSystemPrompt, SUBAGENT_SYSTEM_PROMPT } from "../prompt/builder.ts";
+import type { OutputStyle } from "../prompt/builder.ts";
 import { tag } from "../prompt/harness.ts";
 import { makeStreamRenderer, runAgentLoop } from "../agent/loop.ts";
 import { PermissionManager } from "../agent/permissions.ts";
@@ -107,18 +108,23 @@ export async function runChat(args: ChatArgs): Promise<void> {
   // Active skills: name → content, toggled via /skill. Folded into the prompt
   // before project instructions so repo rules still win on conflicts.
   let activeSkills = new Map<string, string>();
+  let outputStyle: OutputStyle = "concise";
 
   const rebuildSystemPrompt = (): void => {
     const rebuilt = buildSystemPrompt({
       cwd,
       modelInfo,
+      modelId: model,
       isReasoning: reasoning,
       userSystemPrompt: args.system,
-      projectInstructions: instructions,
       activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
+      outputStyle,
     });
     session.promptVariant = rebuilt.variant;
     ensureSystemPrefix(session.messages, rebuilt.text);
+    // Inject dynamic context (env + project rules) as separate user messages
+    // so the system prompt stays static (cacheable across turns/sessions).
+    ensureEnvContext(session.messages, rebuilt.envContext, instructions);
   };
   rebuildSystemPrompt();
 
@@ -582,7 +588,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
           }
           continue;
         }
-        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi, reasoning: { get: () => reasoning, set: setReasoning }, effort: { get: () => reasoningEffort, set: setReasoningEffort }, context: { get: () => maxContext, set: setMaxContext }, promptLog: { get: () => promptLogOn, set: setPromptLog }, permissions: permsApi, prefillHolder, runSideTurn });
+        const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi, reasoning: { get: () => reasoning, set: setReasoning }, effort: { get: () => reasoningEffort, set: setReasoningEffort }, context: { get: () => maxContext, set: setMaxContext }, promptLog: { get: () => promptLogOn, set: setPromptLog }, permissions: permsApi, prefillHolder, runSideTurn, style: { get: () => outputStyle, set: (s) => { outputStyle = s; rebuildSystemPrompt(); } } });
         if (prefillHolder.value) { prefill = prefillHolder.value; prefillHolder.value = ""; }
         if (handled === "exit") break;
         continue;
@@ -663,13 +669,15 @@ async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
     const rebuilt = buildSystemPrompt({
       cwd: session.cwd,
       modelInfo: resolvedInfo,
+      modelId: model,
       isReasoning: reasoning,
       userSystemPrompt: deps.userSystemPrompt,
-      projectInstructions: deps.projectInstructions,
       activeSkills: deps.activeSkills,
     });
     session.promptVariant = rebuilt.variant;
     ensureSystemPrefix(session.messages, rebuilt.text);
+    // Re-inject env context after system prompt rebuild (auto model switch).
+    ensureEnvContext(session.messages, rebuilt.envContext, deps.projectInstructions);
   }
   const renderer = makeStreamRenderer({ showReasoning: reasoning === true, model });
   const turnStart = performance.now();
@@ -943,6 +951,65 @@ function ensureSystemPrefix(messages: ChatMessage[], systemPrompt: string): void
   messages[0].content = systemPrompt;
 }
 
+/**
+ * Inject dynamic context (environment + project rules) as separate user
+ * messages immediately after the system message. These are one-shot injection
+ * points that keep the system prompt itself static (cross-turn cacheable).
+ *
+ * The env context is placed as the first user message so the model treats it
+ * as fresh context rather than stale preamble. Project instructions follow
+ * right after, marked as override rules.
+ */
+function ensureEnvContext(messages: ChatMessage[], envContext: string, projectInstructions?: string | null): void {
+  // Remove existing env/project context messages injected earlier (identified
+  // by the ## Environment / ## Project instructions headers).
+  let i = messages.length - 1;
+  while (i >= 0) {
+    const m = messages[i];
+    if (m.role === "user" && typeof m.content === "string" &&
+        (m.content.startsWith("## Environment") || m.content.startsWith("## Project instructions"))) {
+      messages.splice(i, 1);
+    }
+    i--;
+  }
+
+  // Find the position right after the system message for insertion.
+  let insertAt = 0;
+  while (insertAt < messages.length && messages[insertAt].role === "system") {
+    insertAt++;
+  }
+  // If there are no user messages yet, append. Otherwise insert after system.
+  if (insertAt < messages.length && messages[insertAt].role === "user") {
+    // If the first user message already looks like env context, replace it.
+    const firstUser = messages[insertAt];
+    if (typeof firstUser.content === "string" && firstUser.content.startsWith("## Environment")) {
+      firstUser.content = envContext;
+    } else {
+      messages.splice(insertAt, 0, { role: "user", content: envContext });
+    }
+  } else {
+    messages.splice(insertAt, 0, { role: "user", content: envContext });
+  }
+
+  // Inject project instructions as the next user message after env.
+  if (projectInstructions) {
+    // Find env message position (it was just inserted or updated above).
+    const envIdx = messages.findIndex((m) =>
+      m.role === "user" && typeof m.content === "string" && m.content.startsWith("## Environment"));
+    const projMsg: ChatMessage = {
+      role: "user",
+      content:
+        "## Project instructions (highest priority — overrides the defaults)\n" +
+        projectInstructions,
+    };
+    if (envIdx >= 0) {
+      messages.splice(envIdx + 1, 0, projMsg);
+    } else {
+      messages.splice(insertAt, 0, projMsg);
+    }
+  }
+}
+
 function printWelcome(model: string, reasoning: boolean, yolo: boolean, baseUrl?: string): void {
   const lines: string[] = [];
   lines.push(
@@ -976,6 +1043,8 @@ export interface SlashCtx {
    *  main session's messages + token usage are not touched and nothing is
    *  persisted. The side turn renders to stdout so the user sees the answer. */
   runSideTurn: (prompt: string) => Promise<void>;
+  /** Output style (concise | explain | learning). */
+  style: { get: () => OutputStyle; set: (s: OutputStyle) => void };
 }
 
 /** Permission API handed to the /allow and /approve slash commands. */
@@ -1110,16 +1179,26 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
       await ctx.runSideTurn(q);
       return "continue";
     }
-    case "fast": {
-      // Exploration-phase shortcut: switch to the fastest non-thinking model
-      // and disable reasoning. read_file/grep/list_dir round-trips become
-      // seconds faster (no chain-of-thought before each tool call).
-      ctx.setModel("deepseek-v4-flash");
-      await ctx.reasoning.set(false);
-      printSystem(`${symbol.bolt} fast mode — v4-flash, reasoning off (use /think to switch back)`, "green");
+    case "style": {
+      const target = rest[0];
+      const valid = ["concise", "explain", "learning"];
+      if (!target || !valid.includes(target)) {
+        const cur = ctx.style.get();
+        for (const s of valid) {
+          const marker = s === cur ? paint.green("← current") : "";
+          writeLine(`  ${paint.cyan(s.padEnd(12))} ${marker}`);
+        }
+        writeLine(paint.gray("\n/style concise — short, direct answers (default)"));
+        writeLine(paint.gray("/style explain — educational, explains WHY"));
+        writeLine(paint.gray("/style learning — tutoring, asks you to write code"));
+        return "continue";
+      }
+      ctx.style.set(target as OutputStyle);
+      const labels: Record<string, string> = { concise: "short, direct answers", explain: "educational, explains WHY", learning: "tutoring, asks you to write code" };
+      printSystem(`${symbol.edit} style: ${target} — ${labels[target] ?? ""}`, "green");
       return "continue";
     }
-    case "think": {
+    case "fast": {
       // Writing-code phase shortcut: switch to the reasoner + high effort.
       ctx.setModel("deepseek-v4-pro");
       await ctx.reasoning.set(true);
@@ -1562,6 +1641,7 @@ function printSlashHelp(): void {
     ["/retry", "re-run the last user prompt (drops the previous reply)"],
     ["/export [path]", "dump the transcript to stdout or a file"],
     ["/sessions [query]", "list recent sessions (or search by keyword)"],
+    ["/style [concise|explain|learning]", "output personality: direct / educational / tutoring"],
   ];
   // Display in stable A-Z order by command name.
   cmds.sort((a, b) => a[0].localeCompare(b[0]));

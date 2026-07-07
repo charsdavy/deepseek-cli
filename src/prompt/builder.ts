@@ -9,39 +9,66 @@
 //   • unit-test the assembled prompt's structure
 //   • keep project-level instructions (AGENTS.md) and user overrides
 //     strictly last so they win on conflicts
+//
+// Token-economy architecture (inspired by Claude Code):
+//   • System prompt = static blocks only (identity, tools, behavior, style, safety).
+//     This keeps the system payload cacheable across turns and sessions.
+//   • Dynamic context (cwd, git branch, date, model identity) is returned as
+//     a separate envContext string for injection as a user message — one-shot
+//     at conversation start, never re-sent. This saves ~300 tokens/turn.
+//   • Project instructions (AGENTS.md etc.) are NO LONGER folded into the system
+//     prompt. The caller (chat.ts) injects them as a dedicated user message
+//     with clear override semantics so the model treats them as fresh input
+//     rather than stale preamble.
 
 import { execSync } from "node:child_process";
 import type { ModelInfo } from "../api/models.ts";
 import type { ActiveSkill } from "../skills/store.ts";
 
-export const PROMPT_VARIANT = "v1";
+export const PROMPT_VARIANT = "v2";
 
 export interface BuildPromptOptions {
   cwd: string;
   /** Resolved model object — used to detect reasoning variants. */
   modelInfo?: ModelInfo;
+  /** Resolved model id shown in the identity block. */
+  modelId?: string;
   /** Set true to force the reasoning addendum regardless of modelInfo. */
   isReasoning?: boolean;
   /** User-supplied -s/--system text. */
   userSystemPrompt?: string;
-  /** Project-level AGENTS.md / deepseek.md / .cursorrules content. */
+  /** @deprecated Project instructions are no longer folded into the system prompt.
+   *  The caller should inject them as a separate user message instead. */
   projectInstructions?: string | null;
   /** Skills the user activated via /skill — folded in before project rules. */
   activeSkills?: ActiveSkill[];
+  /** Output style — controls verbosity and tone. */
+  outputStyle?: OutputStyle;
 }
 
+/** Output personality controlled via /style command. */
+export type OutputStyle = "concise" | "explain" | "learning";
+
 export interface BuiltPrompt {
+  /** Static system prompt (no env, no project instructions — cacheable). */
   text: string;
   variant: string;
   /** Ordered block list (for inspection / tests). */
   blocks: string[];
+  /** Environment context string for one-shot injection as a user message. */
+  envContext: string;
 }
 
 // ---- Block definitions ---------------------------------------------------
 
-const IDENTITY_BLOCK = `## Identity
+function buildIdentity(modelId?: string): string {
+  const modelLine = modelId
+    ? `\nYou are powered by the model named ${modelId}.\nThe exact model ID is ${modelId}.`
+    : "";
+  return `## Identity
 You are DeepSeek CLI, an agentic command-line AI coding assistant running
-inside the user's terminal at their project working directory.`;
+inside the user's terminal at their project working directory.${modelLine}`;
+}
 
 const TOOL_BLOCK = `## Tools
 You have the following tools. Pick the most specific one for each job.
@@ -145,7 +172,7 @@ iterations" is the dominant source of perceived slowness — flatten it:
 The model that follows these rules feels ~5–10× snappier to the user
 without any other change.`;
 
-const STYLE_BLOCK = `## Output style
+const STYLE_CONCISE = `## Output style
 - Be concise. Answer in 1–3 sentences unless the user asks for detail.
 - Start with the answer itself — never with "Sure", "Here is…", "Here are…",
   "Based on the information provided…", "The answer is…", or "Confirmed.".
@@ -156,6 +183,51 @@ const STYLE_BLOCK = `## Output style
 - Format final answers in Markdown: headings, lists, fenced code blocks.
 - Never echo large file portions back to the user — they already have the
   file. Quote only the specific lines you're commenting on.`;
+
+const STYLE_EXPLAIN = `## Output style (explanatory mode)
+- Provide educational insights about the codebase along the way.
+- Explain WHY the code works the way it does, not just WHAT it does.
+- Mention relevant design patterns, trade-offs, and alternative approaches.
+- Keep the explanation focused — don't lecture. A 3-line insight is better
+  than a 20-line essay.
+- Reference code using \`path/to/file.ts:line_number\`.
+- Format answers in Markdown: headings, lists, fenced code blocks.`;
+
+const STYLE_LEARNING = `## Output style (learning mode)
+- Act as a coding tutor. Pause and ask the user to write small pieces of
+  code for hands-on practice before completing the full implementation.
+- For each step: explain the concept, ask the user to write the code,
+  then review and refine together.
+- Start each teaching moment with a clear learning goal.
+- Provide constructive feedback on the user's code — focus on one
+  improvement at a time.
+- Format answers in Markdown: headings, lists, fenced code blocks.`;
+
+function buildStyleBlock(style?: OutputStyle): string {
+  switch (style) {
+    case "explain": return STYLE_EXPLAIN;
+    case "learning": return STYLE_LEARNING;
+    default: return STYLE_CONCISE;
+  }
+}
+
+const CODE_STYLE_BLOCK = `## Code style
+- Don't add features, refactor, or introduce abstractions beyond what the
+  task requires. A bug fix doesn't need surrounding cleanup; a one-shot
+  operation doesn't need a helper. Don't design for hypothetical future
+  requirements. Three similar lines is better than a premature abstraction.
+- Don't add error handling, fallbacks, or validation for scenarios that
+  can't happen. Trust internal code and framework guarantees. Only validate
+  at system boundaries (user input, external APIs).
+- Default to writing no comments. Only add one when the WHY is non-obvious:
+  a hidden constraint, a subtle invariant, a workaround for a specific bug,
+  behavior that would surprise a reader. If removing the comment wouldn't
+  confuse a future reader, don't write it.
+- Don't explain WHAT the code does — well-named identifiers already do that.
+- For UI or frontend changes, start the dev server and use the feature in a
+  browser before reporting the task as complete. Type checking and test
+  suites verify code correctness, not feature correctness — if you can't
+  test the UI, say so explicitly.`;
 
 const SAFETY_BLOCK = `## Safety
 - Never commit, push, or amend git history unless the user explicitly asks.
@@ -180,16 +252,18 @@ export const SUBAGENT_SYSTEM_PROMPT = `## Identity
 You are a focused DeepSeek sub-agent running inside a parent agent loop.
 
 ## Tools
-You have the same tools as the parent. Pick the most specific one for each
-job and batch read-only calls when possible.
+You have the same file/code tools as the parent (read_file, read_files,
+glob, grep, web_fetch, bash, write_file, edit_file). Use them exactly
+as the parent would — batch read-only calls in one turn to reduce latency.
 
 ## Output
 Complete the assigned subtask, then return ONLY the final result — no
-preamble, no follow-up questions, no narration of what you did.`;
+preamble, no follow-up questions, no narration of what you did. Do NOT use
+\`task\` or \`todo_write\` — you ARE the leaf worker, not the coordinator.`;
 
 // ---- Environment context -------------------------------------------------
 
-function buildEnvironmentContext(cwd: string): string {
+export function buildEnvironmentContext(cwd: string, modelInfo?: ModelInfo): string {
   const platform = process.platform;
   const osLabel =
     platform === "darwin" ? "macOS"
@@ -199,6 +273,7 @@ function buildEnvironmentContext(cwd: string): string {
   const today = new Date().toISOString().slice(0, 10);
   const gitBranch = safeGit("rev-parse --abbrev-ref HEAD");
   const gitUrl = safeGit("config --get remote.origin.url");
+  const gitCommit = safeGit("rev-parse HEAD")?.slice(0, 8);
 
   const lines: string[] = [
     "## Environment",
@@ -206,8 +281,12 @@ function buildEnvironmentContext(cwd: string): string {
     `- Platform: ${osLabel} (${platform}/${process.arch})`,
     `- Today's date: ${today}`,
   ];
+  if (modelInfo) {
+    lines.push(`- Model: ${modelInfo.label} (\`${modelInfo.id}\`)${modelInfo.thinking ? " (reasoning enabled)" : ""}`);
+  }
   if (gitBranch) lines.push(`- Git branch: \`${gitBranch}\``);
   if (gitUrl) lines.push(`- Git remote: \`${gitUrl}\``);
+  if (gitCommit) lines.push(`- Git commit: \`${gitCommit}\``);
   return lines.join("\n");
 }
 
@@ -226,28 +305,67 @@ function safeGit(args: string): string | null {
 
 // ---- Public builder ------------------------------------------------------
 
+// Section-level cache: avoids rebuilding identical system prompts across
+// consecutive rebuildSystemPrompt() calls (e.g. model toggle back to the
+// same model, skill activation no-op). Cache is bounded to 8 entries
+// to prevent unbounded growth during long sessions with many skill switches.
+const _promptCache = new Map<string, BuiltPrompt>();
+const _MAX_CACHE_SIZE = 8;
+
+function _cacheKey(opts: BuildPromptOptions): string {
+  // Hash the options that affect the output — including cwd since
+  // envContext depends on it (git branch/remote/commit vary by directory).
+  const skillsHash = (opts.activeSkills ?? [])
+    .map((s) => `${s.name}:${s.content.length}`)
+    .join(",");
+  return [
+    opts.cwd,
+    opts.modelId ?? opts.modelInfo?.id ?? "",
+    opts.modelInfo?.thinking ?? false,
+    opts.isReasoning ?? false,
+    opts.userSystemPrompt ?? "",
+    opts.projectInstructions ?? "",
+    opts.outputStyle ?? "concise",
+    skillsHash,
+  ].join("|");
+}
+
 export function buildSystemPrompt(opts: BuildPromptOptions): BuiltPrompt {
+  const key = _cacheKey(opts);
+  const cached = _promptCache.get(key);
+  if (cached) return cached;
+
   const isReasoning =
     opts.isReasoning === true || opts.modelInfo?.thinking === true;
 
+  const envContext = buildEnvironmentContext(opts.cwd, opts.modelInfo);
+
   const blocks: string[] = [
-    IDENTITY_BLOCK,
-    buildEnvironmentContext(opts.cwd),
+    buildIdentity(opts.modelId ?? opts.modelInfo?.id),
     TOOL_BLOCK,
     BEHAVIOR_BLOCK,
     LATENCY_BLOCK,
+    CODE_STYLE_BLOCK,
     SAFETY_BLOCK,
-    STYLE_BLOCK,
+    buildStyleBlock(opts.outputStyle),
   ];
 
   if (isReasoning) blocks.push(REASONING_ADDENDUM);
 
   // Active skills: specialized instructions chosen by the user via /skill.
-  // Placed after the built-in blocks (incl. reasoning) but before project
-  // instructions so repo rules still win on conflicts.
+  // Per-skill content budget (≈ 500 tokens) prevents a single large skill
+  // from bloating the system prompt past cacheability thresholds.
   if (opts.activeSkills && opts.activeSkills.length > 0) {
+    const MAX_SKILL_CONTENT_CHARS = 2000;
     const body = opts.activeSkills
-      .map((s) => `### skill: ${s.name}\n${s.content.trim()}`)
+      .map((s) => {
+        const trimmed = s.content.trim();
+        if (trimmed.length <= MAX_SKILL_CONTENT_CHARS) {
+          return `### skill: ${s.name}\n${trimmed}`;
+        }
+        const truncated = trimmed.slice(0, MAX_SKILL_CONTENT_CHARS);
+        return `### skill: ${s.name}\n${truncated}\n... (truncated — ${trimmed.length - MAX_SKILL_CONTENT_CHARS} more chars omitted from skill body)`;
+      })
       .join("\n\n");
     blocks.push(
       "## Active skills\nThe following skills are enabled. Prioritize their specialized instructions for the current task and all subsequent turns until deactivated.\n" +
@@ -255,8 +373,8 @@ export function buildSystemPrompt(opts: BuildPromptOptions): BuiltPrompt {
     );
   }
 
-  // Project-level instructions (AGENTS.md etc.) ALWAYS come after the
-  // built-in blocks and are explicitly marked as overriding them.
+  // Project instructions (AGENTS.md etc.) — kept for backward compatibility
+  // but callers should prefer injecting them as a user message.
   if (opts.projectInstructions) {
     blocks.push(
       "## Project instructions (highest priority — overrides the defaults above)\n" +
@@ -264,14 +382,29 @@ export function buildSystemPrompt(opts: BuildPromptOptions): BuiltPrompt {
     );
   }
 
-  // User-supplied -s/--system comes last so it can refine project rules too.
+  // User-supplied -s/--system last so it can refine everything above.
   if (opts.userSystemPrompt) {
     blocks.push("## User-supplied system prompt\n" + opts.userSystemPrompt);
   }
 
-  return {
+  const result: BuiltPrompt = {
     text: blocks.join("\n\n"),
     variant: PROMPT_VARIANT,
     blocks,
+    envContext,
   };
+
+  // Store in cache (LRU: evict oldest if full).
+  if (_promptCache.size >= _MAX_CACHE_SIZE) {
+    const first = _promptCache.keys().next().value;
+    if (first !== undefined) _promptCache.delete(first);
+  }
+  _promptCache.set(key, result);
+
+  return result;
+}
+
+/** Clear the prompt cache (useful for testing). */
+export function clearPromptCache(): void {
+  _promptCache.clear();
 }
