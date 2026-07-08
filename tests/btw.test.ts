@@ -38,6 +38,7 @@ function makeCtx(runSideTurn: (q: string) => Promise<void>): SlashCtx {
     context: { get: () => 60000, set: async () => {} },
     promptLog: { get: () => true, set: async () => {} },
     permissions: { dangerousTools: () => [], isAllowed: () => false, allow: () => {}, clear: () => {}, approvalMode: () => "auto", setApprovalMode: async () => {} },
+    style: { get: () => "concise" as const, set: () => {} },
     prefillHolder: { value: "" },
     runSideTurn,
   };

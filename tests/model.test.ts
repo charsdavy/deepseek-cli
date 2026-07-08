@@ -46,6 +46,7 @@ describe("/model slash command", () => {
       effort: { get: () => undefined, set: async () => {} },
       context: { get: () => undefined, set: async () => {} },
       promptLog: { get: () => true, set: async () => {} },
+      style: { get: () => "concise" as const, set: () => {} },
     };
   });
 
@@ -98,6 +99,7 @@ describe("runModelSetupFlow (non-TTY guard)", () => {
       effort: { get: () => "high", set: async () => { calls.push("effort"); } },
       context: { get: () => 60000, set: async () => { calls.push("context"); } },
       promptLog: { get: () => true, set: async () => {} },
+      style: { get: () => "concise" as const, set: () => {} },
     };
     await runModelSetupFlow(ctx2);
     expect(calls).toEqual([]);
@@ -119,6 +121,7 @@ describe("runModelSetupFlow logic (injected picks)", () => {
       effort: { get: () => opts.effort, set: async (e: "high" | "max") => { calls.push(`effort:${e}`); } },
       context: { get: () => opts.context, set: async (n: number) => { calls.push(`context:${n}`); } },
       promptLog: { get: () => true, set: async () => {} },
+      style: { get: () => "concise" as const, set: () => {} },
     };
     return { ctx, calls };
   }

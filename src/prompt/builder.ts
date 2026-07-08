@@ -1,62 +1,73 @@
-// Centralized system-prompt builder.
+// Centralized system-prompt builder — supports multi-variant prompts and
+// {{ variable }} template interpolation. Inspired by codex's templated
+// instruction system that allows A/B testing and progressive rollout.
 //
-// The prompt is the most important "code" in an agentic CLI — its wording
-// determines whether the model picks the right tool, addresses the right
-// path, stays concise, and verifies its work. Splitting into modular blocks
-// makes it easy to:
-//   • vary behavior per model variant (reasoner vs chat)
-//   • A/B test prompt revisions via PROMPT_VARIANT
-//   • unit-test the assembled prompt's structure
-//   • keep project-level instructions (AGENTS.md) and user overrides
-//     strictly last so they win on conflicts
+// Variants:
+//   - v2  (default): Current production prompt.
+//   - v3  (experimental): Enhanced with classification awareness, commentary
+//          channel guidance, and token budget awareness.
 //
-// Token-economy architecture (inspired by Claude Code):
-//   • System prompt = static blocks only (identity, tools, behavior, style, safety).
-//     This keeps the system payload cacheable across turns and sessions.
-//   • Dynamic context (cwd, git branch, date, model identity) is returned as
-//     a separate envContext string for injection as a user message — one-shot
-//     at conversation start, never re-sent. This saves ~300 tokens/turn.
-//   • Project instructions (AGENTS.md etc.) are NO LONGER folded into the system
-//     prompt. The caller (chat.ts) injects them as a dedicated user message
-//     with clear override semantics so the model treats them as fresh input
-//     rather than stale preamble.
+// Template variables (use {{ variableName }} in any block):
+//   - modelId         → resolved model identifier
+//   - maxContext      → context budget in tokens
+//   - taskCategory    → classification result category
+//   - personality     → output style (concise / explain / learning)
 
 import { execSync } from "node:child_process";
 import type { ModelInfo } from "../api/models.ts";
 import type { ActiveSkill } from "../skills/store.ts";
+import type { ClassificationResult } from "../agent/classifier.ts";
 
 export const PROMPT_VARIANT = "v2";
+export const AVAILABLE_VARIANTS = ["v2", "v3"] as const;
 
 export interface BuildPromptOptions {
   cwd: string;
-  /** Resolved model object — used to detect reasoning variants. */
   modelInfo?: ModelInfo;
-  /** Resolved model id shown in the identity block. */
   modelId?: string;
-  /** Set true to force the reasoning addendum regardless of modelInfo. */
   isReasoning?: boolean;
-  /** User-supplied -s/--system text. */
   userSystemPrompt?: string;
-  /** @deprecated Project instructions are no longer folded into the system prompt.
-   *  The caller should inject them as a separate user message instead. */
   projectInstructions?: string | null;
-  /** Skills the user activated via /skill — folded in before project rules. */
   activeSkills?: ActiveSkill[];
-  /** Output style — controls verbosity and tone. */
   outputStyle?: OutputStyle;
+  /** Prompt variant name — "v2" or "v3". Defaults to PROMPT_VARIANT. */
+  variant?: string;
+  /** Task classification result for adaptive prompting (v3 only). */
+  classification?: ClassificationResult;
+  /** Context budget for model awareness. */
+  maxContext?: number;
 }
 
-/** Output personality controlled via /style command. */
 export type OutputStyle = "concise" | "explain" | "learning";
 
 export interface BuiltPrompt {
-  /** Static system prompt (no env, no project instructions — cacheable). */
   text: string;
   variant: string;
-  /** Ordered block list (for inspection / tests). */
   blocks: string[];
-  /** Environment context string for one-shot injection as a user message. */
   envContext: string;
+}
+
+// ---- Template interpolation ------------------------------------------------
+
+const RE_TEMPLATE = /\{\{\s*(\w+)\s*\}\}/g;
+
+interface TemplateContext {
+  modelId?: string;
+  maxContext?: number;
+  taskCategory?: string;
+  personality?: string;
+}
+
+function interpolate(text: string, ctx: TemplateContext): string {
+  return text.replace(RE_TEMPLATE, (_match, key: string) => {
+    switch (key) {
+      case "modelId": return ctx.modelId ?? "auto";
+      case "maxContext": return ctx.maxContext ? `${Math.round(ctx.maxContext / 1000)}k` : "60k";
+      case "taskCategory": return ctx.taskCategory ?? "general";
+      case "personality": return ctx.personality ?? "concise";
+      default: return `{{${key}}}`;
+    }
+  });
 }
 
 // ---- Block definitions ---------------------------------------------------
@@ -91,15 +102,9 @@ You have the following tools. Pick the most specific one for each job.
 - list_dir — quick single-level folder overview. Prefer over \`ls\` in bash.
 - web_fetch — fetch external HTTP(S) URLs.
 - web_search — search the public web via DuckDuckGo. Use ON DEMAND only for
-  fresh information beyond your training data (latest library versions,
-  recent docs, release notes, news). Do NOT use for things you already know
-  or can derive from local files — that wastes a network round-trip. Pairs
-  with web_fetch: search to discover, then fetch the best hit for deeper
-  reading.
-- git_diff — read-only structured view of \`git diff\`. Prefer this over
-  \`bash git diff\` for inspecting uncommitted or ref-to-ref changes.
-- git_status — read-only structured view of \`git status\` (porcelain + branch).
-  Prefer this over \`bash git status\` for working-tree state.
+  fresh information beyond your training data.
+- git_diff — read-only structured view of \`git diff\`.
+- git_status — read-only structured view of \`git status\`.
 - task — launch a sub-agent for a self-contained subtask; returns its final
   answer. Issue multiple task calls together to parallelize independent work.
 - todo_write — use proactively when the task has ≥3 steps; keep exactly one
@@ -109,99 +114,92 @@ When a tool call returns, READ the result carefully before the next step —
 do not blindly act on assumptions.
 
 Only call tools by their EXACT registered names listed above. Inventing a
-name — a placeholder, a guess, or a made-up token — returns \`unknown_tool\`
-and burns a whole iteration for nothing. If you are unsure a tool fits,
-re-read this list; if none of them does, answer in plain text. Do NOT
-fabricate a tool call. If a call fails, read the error and fix the root
-cause rather than re-issuing the same failing name.`;
+name returns \`unknown_tool\` and burns a whole iteration for nothing.`;
 
 const BEHAVIOR_BLOCK = `## Proactive behavior
 - For non-trivial tasks (≥3 steps that change code), call todo_write FIRST to plan.
 - For READ-ONLY tasks (read code, explain, propose a solution, answer a
   question) do NOT call todo_write — just read the relevant files and answer.
-  Spawning a todo list for a pure "read and explain" task wastes an iteration.
 - When asked to IMPLEMENT, FIX, or BUILD: pick up edit_file / write_file
-  IMMEDIATELY. Do NOT re-explain the plan, re-summarize the approach, or
-  narrate "I will now…" before editing. Analysis is done — implementation
-  means writing code, not talking about writing code. A turn that ends with
-  text but zero file edits is a failure mode when the user asked for changes.
+  IMMEDIATELY. Do NOT re-explain the plan or narrate before editing.
 - When you need 2+ files to answer, call read_files ONCE (batch) instead of
-  several read_file calls across turns. This is the highest-leverage speed win.
+  several read_file calls across turns.
 - After editing code, run the project's lint + typecheck + tests before
   claiming success. NEVER say "done" without verifying.
-- Mimic existing repo conventions: read neighbouring files and
-  package/config files (package.json, tsconfig.json, AGENTS.md, …) before
-  writing new code. NEVER assume a library is available without checking.
-- When a tool fails, read the error carefully and fix the root cause. Do
-  not retry the same call more than twice; if still failing, explain the
-  situation to the user.
+- Mimic existing repo conventions: read neighbouring files and config files
+  before writing new code. NEVER assume a library is available.
+- When a tool fails, read the error carefully and fix the root cause.
 - For tasks larger than ~20 steps, write the full todo_write list FIRST,
-  then execute ONE todo item per turn. Never attempt a big task as one
-  unbounded run — hitting the iteration cap with the work unfinished (an
-  empty final answer) is a failure. Split into phases, checkpoint between
-  them, and let the user steer.
-- In long conversations, keep this thread lean: locate code with grep/glob
-  instead of whole-file read_file passes, and delegate self-contained
-  investigations to the \`task\` sub-agent so their context stays out of the
-  main loop. Re-reading a file already in context is wasted tokens.
+  then execute ONE todo item per turn.
+- In long conversations, keep this thread lean: locate code with grep/glob.
 - Never commit, amend, push, or create PRs unless explicitly asked.`;
 
 const LATENCY_BLOCK = `## Iteration cost (very important)
 Each tool-call turn costs several seconds of model reasoning before your
-NEXT tool call can fire. A pattern of "one tool per iteration across many
-iterations" is the dominant source of perceived slowness — flatten it:
+NEXT tool call can fire. Flatten tool calls:
 
 - BATCH read-only investigation: when you need read_file A, grep B, list_dir
   C, and read_file D, emit ALL FOUR tool calls in the SAME turn. They run in
   parallel and the user gets all results after a single thinking pause.
 - Don't split trivial inspection commands across bash turns. Chain related
-  shell commands in ONE bash invocation:
-  ` + "```" + `bash
-  wc -l src/index.ts && file package.json && ls scripts/
-  ` + "```" + `
-  rather than three separate bash calls.
-- Never call todo_write twice in one turn. Update it at most once per turn,
-  and only when the high-level plan materially changes — not between every
-  pair of file reads.
-- Prefer read_files (one batch call) over many read_file calls when reading
-  two or more files, even if you discovered the file list iteratively.
-- If a sub-task is self-contained and would expand the main thread's
-  context for nothing, delegate it to the ` + "`task`" + ` tool — the main loop
-  continues while the sub-agent runs.
+  shell commands in ONE bash invocation.
+- Prefer read_files (one batch call) over many read_file calls.
+- If a sub-task is self-contained, delegate it to the \`task\` tool.
 
-The model that follows these rules feels ~5–10× snappier to the user
-without any other change.`;
+The model that follows these rules feels ~5–10× snappier to the user.`;
+
+// V3-only blocks — more advanced prompting with classification awareness and
+// commentary channel guidance.
+
+const CLASSIFICATION_GUIDANCE_BLOCK_V3 = `## Task Classification (v3)
+Before acting, classify the request:
+- **code_review**: Read-only analysis. Be thorough — document patterns and
+  specific suggestions. Do NOT edit files.
+- **implementation**: Move from analysis to action fast. Batch reads in one
+  turn, then edit immediately. Verify with lint/tests.
+- **exploration**: Survey efficiently. Use grep/glob batch calls, present a
+  clear summary. Do NOT edit files.
+- **debug**: Reproduce, diagnose root cause, fix minimally, verify.
+- **planning**: Survey codebase, propose architecture. Consider trade-offs.
+
+Task: {{ taskCategory }}`;
+
+const COMMENTARY_BLOCK_V3 = `## Commentary Channel (v3)
+For tasks expected to take more than one iteration, provide a one-line
+commentary BEFORE your first tool call describing what you're about to do:
+  "Scanning 15 files for authentication patterns…"
+  "Running test suite to reproduce the error…"
+  "Building the new component structure (3 files)…"
+
+This gives the user feedback during long operations. Keep it brief —
+one line, no more than a sentence.`;
+
+const TOKEN_BUDGET_BLOCK_V3 = `## Token Budget Awareness (v3)
+Your context budget is {{ maxContext }}. Use it efficiently:
+- Don't re-read large files already in context.
+- Use grep/glob to locate code instead of whole-file reads for new searches.
+- Delegate self-contained investigations to \`task\` sub-agents.
+- When budget is tight, prioritize completing in-flight work over new exploration.`;
 
 const STYLE_CONCISE = `## Output style
 - Be concise. Answer in 1–3 sentences unless the user asks for detail.
-- Start with the answer itself — never with "Sure", "Here is…", "Here are…",
-  "Based on the information provided…", "The answer is…", or "Confirmed.".
-  BAD:  "Here are the CLI flags in src/cli.ts:\\n\\n| Flag | ..."
-  GOOD: "| Flag | ... |\\n| --- | --- |"
-- Reference code using \`path/to/file.ts:line_number\` so the user can
-  navigate directly.
-- Format final answers in Markdown: headings, lists, fenced code blocks.
-- Never echo large file portions back to the user — they already have the
-  file. Quote only the specific lines you're commenting on.`;
+- Start with the answer itself — never "Sure", "Here is…", "Here are…".
+- Reference code using \`path/to/file.ts:line_number\`.
+- Format final answers in Markdown: headings, lists, fenced code blocks.`;
 
 const STYLE_EXPLAIN = `## Output style (explanatory mode)
 - Provide educational insights about the codebase along the way.
 - Explain WHY the code works the way it does, not just WHAT it does.
 - Mention relevant design patterns, trade-offs, and alternative approaches.
-- Keep the explanation focused — don't lecture. A 3-line insight is better
-  than a 20-line essay.
 - Reference code using \`path/to/file.ts:line_number\`.
-- Format answers in Markdown: headings, lists, fenced code blocks.`;
+- Format answers in Markdown.`;
 
 const STYLE_LEARNING = `## Output style (learning mode)
 - Act as a coding tutor. Pause and ask the user to write small pieces of
-  code for hands-on practice before completing the full implementation.
+  code for hands-on practice.
 - For each step: explain the concept, ask the user to write the code,
   then review and refine together.
-- Start each teaching moment with a clear learning goal.
-- Provide constructive feedback on the user's code — focus on one
-  improvement at a time.
-- Format answers in Markdown: headings, lists, fenced code blocks.`;
+- Format answers in Markdown.`;
 
 function buildStyleBlock(style?: OutputStyle): string {
   switch (style) {
@@ -213,29 +211,18 @@ function buildStyleBlock(style?: OutputStyle): string {
 
 const CODE_STYLE_BLOCK = `## Code style
 - Don't add features, refactor, or introduce abstractions beyond what the
-  task requires. A bug fix doesn't need surrounding cleanup; a one-shot
-  operation doesn't need a helper. Don't design for hypothetical future
-  requirements. Three similar lines is better than a premature abstraction.
-- Don't add error handling, fallbacks, or validation for scenarios that
-  can't happen. Trust internal code and framework guarantees. Only validate
-  at system boundaries (user input, external APIs).
-- Default to writing no comments. Only add one when the WHY is non-obvious:
-  a hidden constraint, a subtle invariant, a workaround for a specific bug,
-  behavior that would surprise a reader. If removing the comment wouldn't
-  confuse a future reader, don't write it.
-- Don't explain WHAT the code does — well-named identifiers already do that.
+  task requires.
+- Don't add error handling or validation for scenarios that can't happen.
+- Default to writing no comments. Only add one when the WHY is non-obvious.
 - For UI or frontend changes, start the dev server and use the feature in a
-  browser before reporting the task as complete. Type checking and test
-  suites verify code correctness, not feature correctness — if you can't
-  test the UI, say so explicitly.`;
+  browser before reporting the task as complete.`;
 
 const SAFETY_BLOCK = `## Safety
 - Never commit, push, or amend git history unless the user explicitly asks.
 - Never delete files the user did not mention.
-- Never run destructive shell commands (\`rm -rf\`, \`git reset --hard\`,
-  \`git push --force\`) without explicit user approval.
-- When the request is ambiguous, ASK for clarification rather than guessing.
-  It is fine to ask a one-line clarifying question before acting.`;
+- Never run destructive shell commands (\`rm -rf\`, \`git reset --hard\`) without
+  explicit user approval.
+- When the request is ambiguous, ASK for clarification.`;
 
 const REASONING_ADDENDUM = `## Reasoning model guidance
 You are running as a thinking model. Use the reasoning trace to plan tool
@@ -243,11 +230,6 @@ sequences and anticipate failure modes BEFORE emitting your first tool call.
 Keep the visible final answer concise — the planning belongs in reasoning,
 not in the user-facing message.`;
 
-// Sub-agent system prompt — a stripped-down sibling of the main identity
-// block. Sub-agents run on a fast model with a bounded context/iteration
-// budget, so the prompt is intentionally short: identity, tool latitude, and
-// the single most important rule (return ONLY the result). Kept here so the
-// harness vocabulary (## headings, terse imperatives) stays in one place.
 export const SUBAGENT_SYSTEM_PROMPT = `## Identity
 You are a focused DeepSeek sub-agent running inside a parent agent loop.
 
@@ -258,8 +240,8 @@ as the parent would — batch read-only calls in one turn to reduce latency.
 
 ## Output
 Complete the assigned subtask, then return ONLY the final result — no
-preamble, no follow-up questions, no narration of what you did. Do NOT use
-\`task\` or \`todo_write\` — you ARE the leaf worker, not the coordinator.`;
+preamble, no follow-up questions. Do NOT use \`task\` or \`todo_write\` —
+you ARE the leaf worker, not the coordinator.`;
 
 // ---- Environment context -------------------------------------------------
 
@@ -303,18 +285,13 @@ function safeGit(args: string): string | null {
   }
 }
 
-// ---- Public builder ------------------------------------------------------
+// ---- Public builder -------------------------------------------------------
 
-// Section-level cache: avoids rebuilding identical system prompts across
-// consecutive rebuildSystemPrompt() calls (e.g. model toggle back to the
-// same model, skill activation no-op). Cache is bounded to 8 entries
-// to prevent unbounded growth during long sessions with many skill switches.
+// LRU cache for prompt building.
 const _promptCache = new Map<string, BuiltPrompt>();
 const _MAX_CACHE_SIZE = 8;
 
 function _cacheKey(opts: BuildPromptOptions): string {
-  // Hash the options that affect the output — including cwd since
-  // envContext depends on it (git branch/remote/commit vary by directory).
   const skillsHash = (opts.activeSkills ?? [])
     .map((s) => `${s.name}:${s.content.length}`)
     .join(",");
@@ -326,6 +303,9 @@ function _cacheKey(opts: BuildPromptOptions): string {
     opts.userSystemPrompt ?? "",
     opts.projectInstructions ?? "",
     opts.outputStyle ?? "concise",
+    opts.variant ?? PROMPT_VARIANT,
+    opts.classification?.category ?? "",
+    opts.maxContext ?? 0,
     skillsHash,
   ].join("|");
 }
@@ -337,24 +317,39 @@ export function buildSystemPrompt(opts: BuildPromptOptions): BuiltPrompt {
 
   const isReasoning =
     opts.isReasoning === true || opts.modelInfo?.thinking === true;
-
+  const variant = opts.variant ?? PROMPT_VARIANT;
   const envContext = buildEnvironmentContext(opts.cwd, opts.modelInfo);
 
+  // Template interpolation context.
+  const tpl: TemplateContext = {
+    modelId: opts.modelId ?? opts.modelInfo?.id,
+    maxContext: opts.maxContext ?? 60_000,
+    taskCategory: opts.classification?.category ?? "general",
+    personality: opts.outputStyle ?? "concise",
+  };
+
   const blocks: string[] = [
-    buildIdentity(opts.modelId ?? opts.modelInfo?.id),
-    TOOL_BLOCK,
-    BEHAVIOR_BLOCK,
-    LATENCY_BLOCK,
-    CODE_STYLE_BLOCK,
-    SAFETY_BLOCK,
-    buildStyleBlock(opts.outputStyle),
+    interpolate(buildIdentity(opts.modelId ?? opts.modelInfo?.id), tpl),
+    interpolate(TOOL_BLOCK, tpl),
+    interpolate(BEHAVIOR_BLOCK, tpl),
+    interpolate(LATENCY_BLOCK, tpl),
+    interpolate(CODE_STYLE_BLOCK, tpl),
+    interpolate(SAFETY_BLOCK, tpl),
+    interpolate(buildStyleBlock(opts.outputStyle), tpl),
   ];
 
-  if (isReasoning) blocks.push(REASONING_ADDENDUM);
+  if (isReasoning) blocks.push(interpolate(REASONING_ADDENDUM, tpl));
 
-  // Active skills: specialized instructions chosen by the user via /skill.
-  // Per-skill content budget (≈ 500 tokens) prevents a single large skill
-  // from bloating the system prompt past cacheability thresholds.
+  // V3-only blocks: classification guidance, commentary channel, token budget.
+  if (variant === "v3") {
+    if (opts.classification) {
+      blocks.push(interpolate(CLASSIFICATION_GUIDANCE_BLOCK_V3, tpl));
+    }
+    blocks.push(interpolate(COMMENTARY_BLOCK_V3, tpl));
+    blocks.push(interpolate(TOKEN_BUDGET_BLOCK_V3, tpl));
+  }
+
+  // Active skills.
   if (opts.activeSkills && opts.activeSkills.length > 0) {
     const MAX_SKILL_CONTENT_CHARS = 2000;
     const body = opts.activeSkills
@@ -364,17 +359,15 @@ export function buildSystemPrompt(opts: BuildPromptOptions): BuiltPrompt {
           return `### skill: ${s.name}\n${trimmed}`;
         }
         const truncated = trimmed.slice(0, MAX_SKILL_CONTENT_CHARS);
-        return `### skill: ${s.name}\n${truncated}\n... (truncated — ${trimmed.length - MAX_SKILL_CONTENT_CHARS} more chars omitted from skill body)`;
+        return `### skill: ${s.name}\n${truncated}\n... (truncated)`;
       })
       .join("\n\n");
     blocks.push(
-      "## Active skills\nThe following skills are enabled. Prioritize their specialized instructions for the current task and all subsequent turns until deactivated.\n" +
-        body,
+      "## Active skills\nThe following skills are enabled.\n" + body,
     );
   }
 
-  // Project instructions (AGENTS.md etc.) — kept for backward compatibility
-  // but callers should prefer injecting them as a user message.
+  // Project instructions — backward compatibility.
   if (opts.projectInstructions) {
     blocks.push(
       "## Project instructions (highest priority — overrides the defaults above)\n" +
@@ -382,19 +375,18 @@ export function buildSystemPrompt(opts: BuildPromptOptions): BuiltPrompt {
     );
   }
 
-  // User-supplied -s/--system last so it can refine everything above.
   if (opts.userSystemPrompt) {
     blocks.push("## User-supplied system prompt\n" + opts.userSystemPrompt);
   }
 
   const result: BuiltPrompt = {
     text: blocks.join("\n\n"),
-    variant: PROMPT_VARIANT,
+    variant,
     blocks,
     envContext,
   };
 
-  // Store in cache (LRU: evict oldest if full).
+  // LRU cache management.
   if (_promptCache.size >= _MAX_CACHE_SIZE) {
     const first = _promptCache.keys().next().value;
     if (first !== undefined) _promptCache.delete(first);
@@ -404,7 +396,6 @@ export function buildSystemPrompt(opts: BuildPromptOptions): BuiltPrompt {
   return result;
 }
 
-/** Clear the prompt cache (useful for testing). */
 export function clearPromptCache(): void {
   _promptCache.clear();
 }

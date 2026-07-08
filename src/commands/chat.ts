@@ -20,6 +20,8 @@ import { newSession, newSessionId, loadSession, listSessions, searchSessions, sa
 import { loadHistory, appendHistory } from "../session/history.ts";
 import { appendPromptLog, buildEntry, countPromptLog, loadPromptLog, searchPromptLog, clearPromptLog, promptLogFile, type PromptLogEntry } from "../session/promptLog.ts";
 import { listSkills, readSkill } from "../skills/store.ts";
+import { generateSessionSummary, persistSessionSummary, loadMemoryContext } from "../memory/store.ts";
+import { classify, type ClassificationResult } from "../agent/classifier.ts";
 import { McpRegistry, loadMcpConfig } from "../mcp/registry.ts";
 import type { McpServerConfig } from "../mcp/registry.ts";
 import { parseAddArgs, addServerToConfig } from "./mcp.ts";
@@ -81,6 +83,10 @@ export async function runChat(args: ChatArgs): Promise<void> {
   const approvalMode = args.yolo ? "yolo" : (args.approvalMode ?? cfg.approvalMode ?? "ask");
   const skipAll = approvalMode === "auto" || approvalMode === "yolo";
   const maxIterations = args.maxIterations;
+  // Feature flags from config.
+  const promptVariant = cfg.promptVariant ?? "v2";
+  const compactionEnabled = cfg.compaction !== false;
+  const memoryGenerationEnabled = cfg.memoryGeneration !== false;
 
   // Session resolution
   let session: Session;
@@ -104,11 +110,14 @@ export async function runChat(args: ChatArgs): Promise<void> {
   }
 
   // System prompt assembly — modular builder, project instructions win.
-  const instructions = await loadProjectInstructions(cwd);
+  const projectInstructions = await loadProjectInstructions(cwd);
+  const memoryContext = memoryGenerationEnabled ? await loadMemoryContext(cwd) : null;
+  const instructions = combineInstructions(projectInstructions, memoryContext);
   // Active skills: name → content, toggled via /skill. Folded into the prompt
   // before project instructions so repo rules still win on conflicts.
   let activeSkills = new Map<string, string>();
   let outputStyle: OutputStyle = "concise";
+  let classification: ClassificationResult | undefined;
 
   const rebuildSystemPrompt = (): void => {
     const rebuilt = buildSystemPrompt({
@@ -117,9 +126,12 @@ export async function runChat(args: ChatArgs): Promise<void> {
       modelId: model,
       isReasoning: reasoning,
       userSystemPrompt: args.system,
-      activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
-      outputStyle,
-    });
+        activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
+        outputStyle,
+        variant: promptVariant,
+        classification,
+        maxContext,
+      });
     session.promptVariant = rebuilt.variant;
     ensureSystemPrefix(session.messages, rebuilt.text);
     // Inject dynamic context (env + project rules) as separate user messages
@@ -438,6 +450,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
   // ---- One-shot mode ----
   if (args.prompt) {
     session.messages.push({ role: "user", content: await expandFileRefs(args.prompt, cwd) });
+    classification = classify(args.prompt);
     const turn = beginTurn();
     try {
       if (args.outputFormat === "json") {
@@ -449,10 +462,14 @@ export async function runChat(args: ChatArgs): Promise<void> {
         await driveTurn(session, {
           apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
           tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
-          promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system, projectInstructions: instructions, activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
+          promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system,
+          projectInstructions: instructions,
+          activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
+          classification, allowCompaction: compactionEnabled,
         });
       }
       await saveSession(session);
+      if (memoryGenerationEnabled) generateAndPersistSummary(apiKey, session, cwd, baseUrl).catch(() => {});
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (args.outputFormat === "json") {
@@ -541,6 +558,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
               continue;
             }
             session.messages.push({ role: "user", content: await expandFileRefs(inv.task, cwd) });
+            classification = classify(inv.task);
             history.unshift(inv.task);
             if (history.length > 1000) history.length = 1000;
             appendHistory(inv.task).catch(() => {});
@@ -549,9 +567,13 @@ export async function runChat(args: ChatArgs): Promise<void> {
               await driveTurn(session, {
                 apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
                 tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
-                promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system, projectInstructions: instructions, activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
+                promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system,
+                projectInstructions: instructions,
+                activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
+                classification, allowCompaction: compactionEnabled,
               });
               await saveSession(session);
+              if (memoryGenerationEnabled) generateAndPersistSummary(apiKey, session, cwd, baseUrl).catch(() => {});
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
               printError(`turn failed: ${msg}`);
@@ -577,9 +599,13 @@ export async function runChat(args: ChatArgs): Promise<void> {
             await driveTurn(session, {
               apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
               tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
-              promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system, projectInstructions: instructions, activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
+              promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system,
+              projectInstructions: instructions,
+              activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
+              classification, allowCompaction: compactionEnabled,
             });
             await saveSession(session);
+            if (memoryGenerationEnabled) generateAndPersistSummary(apiKey, session, cwd, baseUrl).catch(() => {});
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             printError(`turn failed: ${msg}`);
@@ -595,6 +621,10 @@ export async function runChat(args: ChatArgs): Promise<void> {
       }
 
       session.messages.push({ role: "user", content: await expandFileRefs(trimmed, cwd) });
+      classification = classify(trimmed);
+      if (promptVariant === "v3" && classification.confidence > 0.5) {
+        rebuildSystemPrompt();
+      }
       // Remember the prompt for Up/Down recall (newest-first) + persist.
       history.unshift(trimmed);
       if (history.length > 1000) history.length = 1000;
@@ -604,9 +634,13 @@ export async function runChat(args: ChatArgs): Promise<void> {
         await driveTurn(session, {
           apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
           tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
-          promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system, projectInstructions: instructions, activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
+          promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system,
+          projectInstructions: instructions,
+          activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
+          classification, allowCompaction: compactionEnabled,
         });
         await saveSession(session);
+        if (memoryGenerationEnabled) generateAndPersistSummary(apiKey, session, cwd, baseUrl).catch(() => {});
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         printError(`turn failed: ${msg}`);
@@ -617,6 +651,9 @@ export async function runChat(args: ChatArgs): Promise<void> {
   } finally {
     process.off("SIGINT", onSigInt);
     await saveSession(session).catch(() => {});
+    if (memoryGenerationEnabled) {
+      await generateAndPersistSummary(apiKey, session, cwd, baseUrl).catch(() => {});
+    }
     await mcp.close().catch(() => {});
     restoreTerminal();
     closeReadline();
@@ -650,6 +687,10 @@ interface TurnDeps {
   userSystemPrompt?: string;
   projectInstructions?: string | null;
   activeSkills?: { name: string; content: string }[];
+  /** Task classification for adaptive prompting. */
+  classification?: ClassificationResult;
+  /** Enable LLM-driven context compaction. */
+  allowCompaction?: boolean;
 }
 
 async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
@@ -673,6 +714,9 @@ async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
       isReasoning: reasoning,
       userSystemPrompt: deps.userSystemPrompt,
       activeSkills: deps.activeSkills,
+      variant: deps.promptVariant ?? "v2",
+      classification: deps.classification,
+      maxContext: deps.maxContext,
     });
     session.promptVariant = rebuilt.variant;
     ensureSystemPrefix(session.messages, rebuilt.text);
@@ -714,6 +758,8 @@ async function driveTurn(session: Session, deps: TurnDeps): Promise<void> {
       cwd: session.cwd,
       signal: deps.signal,
       spawnAgent: deps.spawnAgent,
+      classification: deps.classification,
+      allowCompaction: deps.allowCompaction,
       onContentDelta: (d) => renderer.onContentDelta(d),
       onReasoningDelta: (d) => renderer.onReasoningDelta(d),
       onToolStart: () => { renderer.flush(); return true; },
@@ -1010,6 +1056,32 @@ function ensureEnvContext(messages: ChatMessage[], envContext: string, projectIn
   }
 }
 
+/** Combine project instructions with long-term memory context. */
+function combineInstructions(projectInstructions: string | null, memoryContext: string | null): string | null {
+  const parts: string[] = [];
+  if (memoryContext?.trim()) {
+    parts.push("## Project Memory (long-term knowledge from past sessions)\n" + memoryContext.trim());
+  }
+  if (projectInstructions?.trim()) {
+    parts.push(projectInstructions.trim());
+  }
+  return parts.length > 0 ? parts.join("\n\n") : null;
+}
+
+/** Generate session summary and persist to memory store (fire-and-forget). */
+async function generateAndPersistSummary(
+  apiKey: string,
+  session: Session,
+  cwd: string,
+  baseUrl?: string,
+): Promise<void> {
+  if (session.messages.length < 3) return;
+  const summary = await generateSessionSummary(apiKey, session.messages, cwd, baseUrl);
+  if (summary) {
+    await persistSessionSummary(session.id, summary, cwd);
+  }
+}
+
 function printWelcome(model: string, reasoning: boolean, yolo: boolean, baseUrl?: string): void {
   const lines: string[] = [];
   lines.push(
@@ -1195,7 +1267,7 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
       }
       ctx.style.set(target as OutputStyle);
       const labels: Record<string, string> = { concise: "short, direct answers", explain: "educational, explains WHY", learning: "tutoring, asks you to write code" };
-      printSystem(`${symbol.edit} style: ${target} — ${labels[target] ?? ""}`, "green");
+      printSystem(`${symbol.bullet} style: ${target} — ${labels[target] ?? ""}`, "green");
       return "continue";
     }
     case "fast": {

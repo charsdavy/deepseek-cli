@@ -28,15 +28,16 @@ export interface CliConfig {
   temperature?: number;
   maxTokens?: number;
   baseUrl?: string;
-  /** Default reasoning/thinking mode for new sessions (toggled via /reasoning). */
   reasoning?: boolean;
-  /** Thinking intensity: "high" (default) or "max". */
   reasoningEffort?: "high" | "max";
-  /** Operational context-trim budget in tokens (default 60000). */
   maxContext?: number;
-  /** Whether to record per-turn prompt logs for retrospective prompt
-   *  optimization. Default true (enabled). Toggled via /promptlog. */
   promptLog?: boolean;
+  /** Prompt variant ("v2" default, "v3" experimental). */
+  promptVariant?: string;
+  /** Enable LLM-driven context compaction (default true). */
+  compaction?: boolean;
+  /** Enable long-term memory generation (default true). */
+  memoryGeneration?: boolean;
 }
 
 export const DEFAULT_CONFIG: CliConfig = {
@@ -138,6 +139,18 @@ function normalizeConfig(raw: Record<string, unknown>): Partial<CliConfig> {
   if (typeof raw.promptLog === "boolean") {
     out.promptLog = raw.promptLog;
   } else if (raw.promptLog !== undefined) dropped.push("promptLog");
+
+  if (typeof raw.promptVariant === "string" && raw.promptVariant.length > 0) {
+    out.promptVariant = raw.promptVariant;
+  } else if (raw.promptVariant !== undefined) dropped.push("promptVariant");
+
+  if (typeof raw.compaction === "boolean") {
+    out.compaction = raw.compaction;
+  } else if (raw.compaction !== undefined) dropped.push("compaction");
+
+  if (typeof raw.memoryGeneration === "boolean") {
+    out.memoryGeneration = raw.memoryGeneration;
+  } else if (raw.memoryGeneration !== undefined) dropped.push("memoryGeneration");
 
   if (dropped.length > 0) {
     printSystem(`Config: ignoring invalid field(s): ${dropped.join(", ")}`, "yellow");

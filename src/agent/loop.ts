@@ -6,11 +6,12 @@ import type { ChatMessage, ToolDef, TokenUsage } from "../api/client.ts";
 import { DeepSeekUnauthorized, streamChatCompletion } from "../api/client.ts";
 import { isReasoningModel } from "../api/models.ts";
 import { estimateConversationTokens } from "../api/tokens.ts";
-import { trimToFit } from "./context.ts";
+import { trimToFit, trimToFitWithCompaction } from "./context.ts";
 import { trunc } from "../prompt/harness.ts";
 import type { PermissionManager } from "./permissions.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
 import type { ToolContext, ToolResult } from "../tools/types.ts";
+import type { ClassificationResult } from "./classifier.ts";
 import { paint, symbol } from "../ui/theme.ts";
 import { blank, printError, printSystem, printTip, printToolHeader, streamWrite, writeLine, StreamMarkdown } from "../ui/render.ts";
 import { spinner } from "../ui/spinner.ts";
@@ -35,6 +36,10 @@ export interface AgentOptions {
   baseUrl?: string;
   /** Optional sub-agent spawner surfaced to tools via ToolContext. */
   spawnAgent?: (prompt: string, opts?: { description?: string; cwd?: string }) => Promise<string>;
+  /** Task classification result set by the caller before the loop. */
+  classification?: ClassificationResult;
+  /** Allow the loop to use LLM compaction when context is tight. */
+  allowCompaction?: boolean;
   // UI callbacks (kept here so the loop stays decoupled from stdout specifics)
   onContentDelta?: (delta: string) => void;
   onReasoningDelta?: (delta: string) => void;
@@ -94,21 +99,17 @@ export async function runAgentLoop(
   // One-shot nudge when this conversation is already large: steer the model
   // toward context-economical tools so it doesn't keep bloating the thread.
   let contextNudgeShown = false;
-  // Auto-downgrade reasoning effort during long read-only exploration runs
-  // (max→high) so each tool-call iteration stops paying deepest-thinking
-  // overhead for pure grep/read work. Restored back to max as soon as the
-  // model resumes writing code (edit/write/bash) — the downgrade is for
-  // exploration only, never the coding phase the user picked max for.
+  // Auto-downgrade reasoning effort during long read-only exploration runs.
   let effectiveEffort = opts.reasoningEffort;
   let effortDowngraded = false;
-  // One-shot "wrap up" nudge near the iteration cap so the turn ends with a
-  // usable answer instead of running off the cliff with finalText empty.
+  // One-shot "wrap up" nudge near the iteration cap.
   let wrapUpHintShown = false;
-  // Ephemeral system messages (context/wrap-up nudges) are injected for ONE
-  // iteration only; we remove them next iteration so they aren't re-sent to
-  // the API on every subsequent turn (avoids stale-instruction token bloat).
+  // Ephemeral system messages (context/wrap-up nudges) injected for ONE iteration only.
   const ephemeralSystems: ChatMessage[] = [];
   log.info("agent loop start", { model: opts.model, reasoning: shouldReason, reasonEffort: opts.reasoningEffort, maxContext: opts.maxContext, messages: messagesIn.length, maxIterations });
+
+  // Compaction cooldown tracker: incremented on compaction, decremented each turn.
+  const compactionCooldown = { value: 0 };
 
   while (iterations < maxIterations) {
     iterations++;
@@ -121,16 +122,10 @@ export async function runAgentLoop(
       return { messages, iterations, finalText, usage: lastUsage, aborted: true };
     }
 
-    // Restart the spinner for this iteration's "thinking" phase. Without this,
-    // after tools finish (spinner.stop) and the next API call starts, the
-    // terminal shows a bare blinking cursor instead of an active indicator.
+    // Restart the spinner for this iteration's "thinking" phase.
     spinner.start("thinking…");
 
-    // Strip last iteration's ephemeral system nudges so they're sent to the
-    // API exactly once, not re-sent every subsequent turn (stale-instruction
-    // bloat). They were pushed last iteration; remove them before this turn's
-    // trim/inject cycle. Safe with trimToFit, which only keeps them within a
-    // single iteration.
+    // Strip last iteration's ephemeral system nudges.
     if (ephemeralSystems.length > 0) {
       for (const m of ephemeralSystems) {
         const idx = messages.lastIndexOf(m);
@@ -139,9 +134,37 @@ export async function runAgentLoop(
       ephemeralSystems.length = 0;
     }
 
-    // Trim context if necessary
-    const trimmed = trimToFit(messages, opts.maxContext);
-    if (trimmed.droppedTurns > 0) {
+    // Trim context — with optional LLM-driven compaction for smart preservation.
+    const compactionBudget = (opts.maxContext ?? 60_000) - 8000;
+    const needCompaction = opts.allowCompaction !== false &&
+      estimateConversationTokens(messages) > compactionBudget &&
+      compactionCooldown.value <= 0;
+
+    let trimmed: ReturnType<typeof trimToFit> = { messages, droppedTurns: 0, tokensBefore: 0, tokensAfter: 0 };
+    if (needCompaction) {
+      const result = await trimToFitWithCompaction(messages, {
+        maxContext: opts.maxContext,
+        apiKey: opts.apiKey,
+        baseUrl: opts.baseUrl,
+        compactionCooldown,
+      });
+      trimmed = result;
+      if (result.compacted) {
+        spinner.stop();
+        printSystem(
+          `context compacted: ${result.droppedTurns} turns → summary ` +
+            `(saved ~${Math.round((result.compactionSavings ?? 0) / 1000)}k tokens)`,
+          "cyan",
+        );
+        spinner.start("thinking…");
+      }
+    } else {
+      trimmed = trimToFit(messages, opts.maxContext);
+      // Decrement cooldown.
+      if (compactionCooldown.value > 0) compactionCooldown.value--;
+    }
+
+    if (trimmed.droppedTurns > 0 && !trimmed.compacted) {
       printSystem(
         `context trimmed: dropped ${trimmed.droppedTurns} turn(s) ` +
           `(${trimmed.tokensBefore} → ${trimmed.tokensAfter} tokens)`,

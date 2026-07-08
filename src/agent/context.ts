@@ -1,10 +1,11 @@
 // Context window manager — trims older turns to stay under the model's token limit.
+// Supports LLM-driven compaction for smarter context preservation (P0 optimization).
 
 import type { ChatMessage } from "../api/client.ts";
 import { estimateConversationTokens } from "../api/tokens.ts";
+import { compactMessages, COMPACTION_DROP_THRESHOLD, shouldCompact, applyCompaction } from "./compaction.ts";
+import { log } from "../log/logger.ts";
 
-// DeepSeek models generally expose a 64K-128K context window. Pick a safe
-// operational limit and reserve headroom for the next response + tool results.
 const DEFAULT_MAX_CONTEXT_TOKENS = 60_000;
 const DEFAULT_RESERVED_FOR_REPLY = 8_000;
 
@@ -13,28 +14,43 @@ export interface TrimResult {
   droppedTurns: number;
   tokensBefore: number;
   tokensAfter: number;
+  /** If compaction was used instead of simple dropping. */
+  compacted?: boolean;
+  compactionSavings?: number;
+}
+
+export interface TrimOptions {
+  maxContext?: number;
+  reserved?: number;
+  /** API key for compaction calls (flash model). */
+  apiKey?: string;
+  /** Base URL override for compaction API calls. */
+  baseUrl?: string;
+  /** Cooldown counter — incremented each compaction, reset when below threshold. */
+  compactionCooldown?: { value: number };
 }
 
 /**
  * Trims conversation messages to fit the operational context window.
- * Preserves the system message and the latest user turn (the active task).
- * Drops oldest user/assistant pairs first; tool calls are dropped together
- * with the assistant turn that emitted them.
+ * When too many turns would be dropped, attempts LLM-driven compaction first.
+ * Preserves system messages and the latest user turn (the active task).
  */
-export function trimToFit(messages: ChatMessage[], maxContext = DEFAULT_MAX_CONTEXT_TOKENS, reserved = DEFAULT_RESERVED_FOR_REPLY): TrimResult {
+export function trimToFit(
+  messages: ChatMessage[],
+  maxContext = DEFAULT_MAX_CONTEXT_TOKENS,
+  reserved = DEFAULT_RESERVED_FOR_REPLY,
+): TrimResult {
   const budget = maxContext - reserved;
   const tokensBefore = estimateConversationTokens(messages);
   if (tokensBefore <= budget) {
     return { messages, droppedTurns: 0, tokensBefore, tokensAfter: tokensBefore };
   }
 
-  // Index tracking: keep first message (system), trim from index 1 onward.
-  const head: ChatMessage[] = messages.length > 0 && messages[0].role === "system"
+  const head = messages.length > 0 && messages[0].role === "system"
     ? [messages[0]]
     : [];
   const rest = head.length ? messages.slice(1) : messages.slice();
 
-  // Walk from the end back, accumulating until we'd breach.
   let kept: ChatMessage[] = [];
   let keptTokens = estimateConversationTokens(head);
   for (let i = rest.length - 1; i >= 0; i--) {
@@ -44,14 +60,87 @@ export function trimToFit(messages: ChatMessage[], maxContext = DEFAULT_MAX_CONT
     kept.unshift(m);
     keptTokens += t;
   }
-  const droppedTurns = rest.length - kept.length;
+  const dropped = rest.length - kept.length;
   const out: ChatMessage[] = [...head, ...kept];
   return {
     messages: out,
-    droppedTurns,
+    droppedTurns: dropped,
     tokensBefore,
     tokensAfter: estimateConversationTokens(out),
   };
+}
+
+/**
+ * Async trim with optional LLM compaction.
+ * Call this instead of synchronous trimToFit when in an async context
+ * and apiKey is available.
+ */
+export async function trimToFitWithCompaction(
+  messages: ChatMessage[],
+  opts: TrimOptions = {},
+): Promise<TrimResult> {
+  const maxContext = opts.maxContext ?? DEFAULT_MAX_CONTEXT_TOKENS;
+  const reserved = opts.reserved ?? DEFAULT_RESERVED_FOR_REPLY;
+  const budget = maxContext - reserved;
+  const tokensBefore = estimateConversationTokens(messages);
+
+  if (tokensBefore <= budget) {
+    return { messages, droppedTurns: 0, tokensBefore, tokensAfter: tokensBefore };
+  }
+
+  // Check if compaction would help.
+  const compactionCandidate = shouldCompact(messages, COMPACTION_DROP_THRESHOLD);
+  const cooldown = opts.compactionCooldown?.value ?? 0;
+
+  if (compactionCandidate && opts.apiKey && cooldown <= 0) {
+    log.info("compaction candidate", {
+      toDrop: compactionCandidate.droppedMessages.length,
+      cooldown,
+    });
+
+    const result = await compactMessages(
+      opts.apiKey,
+      compactionCandidate.droppedMessages,
+      opts.baseUrl,
+    );
+
+    if (result) {
+      const compacted = applyCompaction(
+        messages,
+        compactionCandidate.droppedMessages,
+        result.summaryMessage,
+      );
+
+      // Reset cooldown.
+      if (opts.compactionCooldown) {
+        opts.compactionCooldown.value = 3;
+      }
+
+      // Still trim if compacted messages exceed budget.
+      const afterCompactionTokens = estimateConversationTokens(compacted);
+      if (afterCompactionTokens > budget) {
+        return trimToFit(compacted, maxContext, reserved);
+      }
+
+      return {
+        messages: compacted,
+        droppedTurns: result.droppedCount,
+        tokensBefore,
+        tokensAfter: afterCompactionTokens,
+        compacted: true,
+        compactionSavings: result.savings,
+      };
+    }
+
+    // Compaction failed — fall through to standard trim.
+  }
+
+  // Decrement cooldown each turn.
+  if (opts.compactionCooldown && opts.compactionCooldown.value > 0) {
+    opts.compactionCooldown.value--;
+  }
+
+  return trimToFit(messages, maxContext, reserved);
 }
 
 export function defaultMaxContext(): number {
@@ -62,8 +151,6 @@ export function defaultReserved(): number {
 }
 
 function estimateTokensFor(m: ChatMessage): number {
-  // The conversation estimator sums messages; for individual summation we
-  // approximate by including the per-message overhead (4 tokens).
   let total = 4;
   if (typeof m.content === "string") total += textTokens(m.content);
   if (m.tool_calls) {
@@ -75,7 +162,6 @@ function estimateTokensFor(m: ChatMessage): number {
 }
 
 function textTokens(s: string): number {
-  // Reuse the API estimator indirectly
   const cjk = (s.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
   const other = s.length - cjk;
   return Math.ceil(cjk / 2 + other / 4);
