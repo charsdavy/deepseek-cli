@@ -13,16 +13,16 @@ const cwd = "/Users/test/project";
 describe("buildSystemPrompt", () => {
   it("emits all core blocks in stable order (static system prompt, no env)", () => {
     const { blocks, text, envContext } = buildSystemPrompt({ cwd });
-    // 7 core blocks: identity, tools, behavior, latency, code style, safety, style
-    // (may include reasoning addendum if model is reasoning-capable)
-    expect(blocks.length).toBeGreaterThanOrEqual(7);
+    // 8 core blocks: identity, tools, behavior, latency, concurrency, code style, safety, style
+    expect(blocks.length).toBeGreaterThanOrEqual(8);
     expect(blocks[0]).toContain("## Identity");
     expect(blocks[1]).toContain("## Tools");
     expect(blocks[2]).toContain("## Proactive behavior");
     expect(blocks[3]).toContain("## Iteration cost");
-    expect(blocks[4]).toContain("## Code style");
-    expect(blocks[5]).toContain("## Safety");
-    expect(blocks[6]).toContain("## Output style");
+    expect(blocks[4]).toContain("## Concurrency");
+    expect(blocks[5]).toContain("## Code style");
+    expect(blocks[6]).toContain("## Safety");
+    expect(blocks[7]).toContain("## Output style");
     // env is not in blocks — it's returned separately
     expect(text).not.toContain("## Environment");
     // envContext should exist
