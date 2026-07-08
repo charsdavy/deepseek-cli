@@ -95,6 +95,7 @@ describe("/allow slash command", () => {
         approvalMode: () => "ask" as const,
         setApprovalMode: async () => {},
       },
+      style: { get: () => "concise" as const, set: () => {} },
       prefillHolder: { value: "" },
       runSideTurn: async () => {},
     };

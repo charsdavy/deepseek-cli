@@ -68,6 +68,28 @@ export class ToolRegistry {
     return this.list().map(toOpenAiTool);
   }
 
+  /**
+   * Search tools by keyword. Returns matching tools. Useful for lazy tool
+   * loading when a large number of MCP tools are registered — the model can
+   * discover tools on demand instead of having all definitions in the prompt.
+   */
+  search(query: string): Tool[] {
+    const lower = query.toLowerCase();
+    return this.list().filter((t) => {
+      const hay = `${t.name} ${t.description} ${t.category}`.toLowerCase();
+      return hay.includes(lower);
+    });
+  }
+
+  /** Generate a compact tool catalog for the prompt (names + summaries only). */
+  catalog(): { name: string; description: string; category: string }[] {
+    return this.list().map((t) => ({
+      name: t.name,
+      description: t.description.slice(0, 120),
+      category: t.category,
+    }));
+  }
+
   async execute(
     name: string,
     args: Record<string, unknown>,

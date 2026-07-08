@@ -1,4 +1,5 @@
-// bash tool — run a shell command with a working directory and timeout.
+// bash tool — run a shell command with a working directory, timeout,
+// and output byte cap (inspired by codex's outputBytesCap for token safety).
 
 import { spawn } from "node:child_process";
 import * as path from "node:path";
@@ -8,6 +9,7 @@ import { tag, trunc } from "../prompt/harness.ts";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const STDOUT_CAP = 512_000;
 const STDERR_CAP = 256_000;
+const OUTPUT_BYTES_CAP = 100_000;
 
 export const bashTool: Tool = {
   name: "bash",
@@ -34,6 +36,12 @@ export const bashTool: Tool = {
         description: `Max execution time in ms. Defaults to ${DEFAULT_TIMEOUT_MS}ms.`,
         minimum: 0,
       },
+      outputBytesCap: {
+        type: "integer",
+        description: `Max combined stdout+stderr bytes. Exceeding this terminates the process early. Defaults to ${OUTPUT_BYTES_CAP}.`,
+        minimum: 1000,
+        maximum: 1_000_000,
+      },
     },
     required: ["command"],
     additionalProperties: false,
@@ -46,10 +54,11 @@ export const bashTool: Tool = {
     }
     const workdir = args.workdir ? String(args.workdir) : undefined;
     const timeout = clamp(Number(args.timeout ?? DEFAULT_TIMEOUT_MS), 1000, 1_800_000);
+    const outputCap = clamp(Number(args.outputBytesCap ?? OUTPUT_BYTES_CAP), 1000, 1_000_000);
     const cwd = workdir ? (path.isAbsolute(workdir) ? workdir : path.resolve(process.cwd(), workdir)) : process.cwd();
 
     try {
-      const { stdout, stderr, code, durationMs, timedOut, stdoutOmitted, stderrOmitted } = await runShell(command, cwd, timeout);
+      const { stdout, stderr, code, durationMs, timedOut, stdoutOmitted, stderrOmitted, outputCapped } = await runShell(command, cwd, timeout, outputCap);
       const parts: string[] = [];
       parts.push(`$ ${command}`);
       parts.push(`(cwd: ${cwd})`);
@@ -63,6 +72,9 @@ export const bashTool: Tool = {
       }
       if (timedOut) {
         parts.push(`(timed out after ${timeout}ms)`);
+      }
+      if (outputCapped) {
+        parts.push(`(output capped at ${outputCap} bytes — process was terminated)`);
       }
       parts.push(`(exit ${code}, ${durationMs}ms)`);
       return {
@@ -85,9 +97,10 @@ interface ShellResult {
   code: number;
   durationMs: number;
   timedOut: boolean;
+  outputCapped: boolean;
 }
 
-function runShell(command: string, cwd: string, timeoutMs: number): Promise<ShellResult> {
+function runShell(command: string, cwd: string, timeoutMs: number, outputCap: number): Promise<ShellResult> {
   return new Promise((resolve) => {
     const start = Date.now();
     const child = spawn(process.env.SHELL ?? "bash", ["-c", command], {
@@ -101,6 +114,18 @@ function runShell(command: string, cwd: string, timeoutMs: number): Promise<Shel
     let stdoutOmitted = 0;
     let stderrOmitted = 0;
     let timedOut = false;
+    let outputCapped = false;
+    let totalBytes = 0;
+
+    const checkOutputCap = (): boolean => {
+      totalBytes = stdout.length + stderr.length;
+      if (totalBytes >= outputCap) {
+        outputCapped = true;
+        child.kill("SIGKILL");
+        return true;
+      }
+      return false;
+    };
 
     child.stdout?.on("data", (d: Buffer) => {
       stdout += d.toString("utf-8");
@@ -108,13 +133,16 @@ function runShell(command: string, cwd: string, timeoutMs: number): Promise<Shel
         stdoutOmitted += stdout.length - STDOUT_CAP;
         stdout = stdout.slice(-STDOUT_CAP);
       }
+      checkOutputCap();
     });
+
     child.stderr?.on("data", (d: Buffer) => {
       stderr += d.toString("utf-8");
       if (stderr.length > STDERR_CAP) {
         stderrOmitted += stderr.length - STDERR_CAP;
         stderr = stderr.slice(-STDERR_CAP);
       }
+      checkOutputCap();
     });
 
     const timer = setTimeout(() => {
@@ -132,8 +160,10 @@ function runShell(command: string, cwd: string, timeoutMs: number): Promise<Shel
         code: code ?? -1,
         durationMs: Date.now() - start,
         timedOut,
+        outputCapped,
       });
     });
+
     child.on("error", () => {
       clearTimeout(timer);
       resolve({
@@ -144,13 +174,14 @@ function runShell(command: string, cwd: string, timeoutMs: number): Promise<Shel
         code: -1,
         durationMs: Date.now() - start,
         timedOut,
+        outputCapped,
       });
     });
   });
 }
 
 function clamp(n: number, min: number, max: number): number {
-  if (!Number.isFinite(n)) return DEFAULT_TIMEOUT_MS;
+  if (!Number.isFinite(n)) return min;
   return Math.max(min, Math.min(max, n));
 }
 

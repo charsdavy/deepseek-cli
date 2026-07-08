@@ -32,6 +32,35 @@ describe("tokens", () => {
     ]);
     expect(t).toBeGreaterThan(10);
   });
+
+  it("handles code blocks with higher token density than prose", () => {
+    const prose = estimateTokens("This is a normal English sentence for testing.");
+    const code = estimateTokens("const x = { a: 1, b: () => { return x.a + y.z; } };");
+    // Code should have more tokens per char due to punctuation density.
+    expect(code).toBeGreaterThanOrEqual(prose);
+  });
+
+  it("handles empty strings", () => {
+    expect(estimateTokens("")).toBe(0);
+  });
+
+  it("handles very long text", () => {
+    const long = "hello ".repeat(1000);
+    const t = estimateTokens(long);
+    expect(t).toBeGreaterThan(500);
+    expect(t).toBeLessThan(3000);
+  });
+
+  it("estimates tool-call messages correctly", () => {
+    const t = estimateConversationTokens([
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "1", type: "function", function: { name: "read_file", arguments: '{"filePath":"/src/foo.ts"}' } }],
+      },
+    ]);
+    expect(t).toBeGreaterThan(15);
+  });
 });
 
 // ---- Tool registry ----
@@ -65,6 +94,33 @@ describe("ToolRegistry", () => {
     const res = await r.execute("nope", {}, { cwd: process.cwd() });
     expect(res.ok).toBe(false);
     expect(res.error).toBe("unknown_tool");
+  });
+
+  it("search returns matching tools by name or description", () => {
+    const r = new ToolRegistry();
+    const results = r.search("read");
+    expect(results.length).toBeGreaterThan(0);
+    // read_file should be in the results since its name contains "read".
+    const readFile = results.find((t) => t.name === "read_file");
+    expect(readFile).toBeDefined();
+    // git_diff description contains "read-only" so it also matches.
+    const gitDiff = results.find((t) => t.name === "git_diff");
+    expect(gitDiff).toBeDefined();
+  });
+
+  it("search returns empty for non-matching query", () => {
+    const r = new ToolRegistry();
+    const results = r.search("zzzz_not_a_tool");
+    expect(results.length).toBe(0);
+  });
+
+  it("catalog returns compact tool summaries", () => {
+    const r = new ToolRegistry();
+    const catalog = r.catalog();
+    expect(catalog.length).toBeGreaterThan(0);
+    expect(catalog[0].name.length).toBeGreaterThan(0);
+    expect(catalog[0].description.length).toBeLessThanOrEqual(120);
+    expect(typeof catalog[0].category).toBe("string");
   });
 });
 
@@ -543,5 +599,39 @@ describe("grep tool", () => {
     const result = await grepTool.execute({ pattern: "EntryViewModel", include: "*.swift", path: tmp }, { cwd: tmp });
     expect(result.ok).toBe(true);
     expect(result.content).toContain("b.swift");
+  });
+});
+
+// ---- bash outputBytesCap ----
+import { bashTool } from "../src/tools/bash.ts";
+
+describe("bash outputBytesCap", () => {
+  it("schema includes outputBytesCap parameter", () => {
+    const props = (bashTool.parameters as { properties?: Record<string, unknown> }).properties ?? {};
+    expect(props.outputBytesCap).toBeDefined();
+    const cap = props.outputBytesCap as { type?: string; minimum?: number; maximum?: number };
+    expect(cap.type).toBe("integer");
+    expect(cap.minimum).toBeGreaterThan(0);
+  });
+
+  it("executes a simple echo command", async () => {
+    const result = await bashTool.execute({ command: "echo hello" }, { cwd: process.cwd() });
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("hello");
+  });
+
+  it("respects outputBytesCap — terminates with large output", async () => {
+    // Generate a command that produces ~200K bytes of output and cap at 5000 bytes.
+    const result = await bashTool.execute(
+      { command: "yes | head -c 200000", outputBytesCap: 5000 },
+      { cwd: process.cwd() },
+    );
+    // The process should terminate early due to the cap.
+    expect(result.content).toContain("output capped");
+  }, 10000);
+
+  it("times out with a very long sleep", async () => {
+    const result = await bashTool.execute({ command: "sleep 30", timeout: 500 }, { cwd: process.cwd() });
+    expect(result.content).toContain("timed out");
   });
 });

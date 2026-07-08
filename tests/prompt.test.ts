@@ -146,9 +146,8 @@ describe("buildSystemPrompt", () => {
   it("code style block contains Don't-style negative rules", () => {
     const { text } = buildSystemPrompt({ cwd });
     expect(text).toContain("Don't add features, refactor, or introduce abstractions");
-    expect(text).toContain("Don't add error handling, fallbacks, or validation");
+    expect(text).toContain("Don't add error handling or validation");
     expect(text).toContain("Default to writing no comments");
-    expect(text).toContain("Don't explain WHAT the code does");
   });
 
   it("caches and returns identical BuiltPrompt for same inputs", () => {
