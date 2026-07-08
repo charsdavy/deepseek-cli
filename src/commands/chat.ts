@@ -9,13 +9,14 @@ import { DEFAULT_MODEL, findModel, isReasoningModel, MODELS, resolveAutoModel, S
 import { estimateConversationTokens } from "../api/tokens.ts";
 import { ensureDirs, getOrSetupApiKey, loadConfig, saveConfig } from "../config/config.ts";
 import { loadProjectInstructions } from "../config/instructions.ts";
-import { buildSystemPrompt, SUBAGENT_SYSTEM_PROMPT } from "../prompt/builder.ts";
+import { buildSystemPrompt, getAgentPrompt, type AgentType } from "../prompt/builder.ts";
 import type { OutputStyle } from "../prompt/builder.ts";
 import { tag } from "../prompt/harness.ts";
 import { makeStreamRenderer, runAgentLoop } from "../agent/loop.ts";
 import { PermissionManager } from "../agent/permissions.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import type { Tool, ToolContext, ToolResult } from "../tools/types.ts";
+import { discoverAgents } from "../agent/agents.ts";
 import { newSession, newSessionId, loadSession, listSessions, searchSessions, saveSession, type Session } from "../session/store.ts";
 import { loadHistory, appendHistory } from "../session/history.ts";
 import { appendPromptLog, buildEntry, countPromptLog, loadPromptLog, searchPromptLog, clearPromptLog, promptLogFile, type PromptLogEntry } from "../session/promptLog.ts";
@@ -120,6 +121,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
   let classification: ClassificationResult | undefined;
 
   const rebuildSystemPrompt = (): void => {
+    const customAgentNames = [...customAgents.keys()];
     const rebuilt = buildSystemPrompt({
       cwd,
       modelInfo,
@@ -131,6 +133,7 @@ export async function runChat(args: ChatArgs): Promise<void> {
         variant: promptVariant,
         classification,
         maxContext,
+        customAgentTypes: customAgentNames.length > 0 ? customAgentNames : undefined,
       });
     session.promptVariant = rebuilt.variant;
     ensureSystemPrefix(session.messages, rebuilt.text);
@@ -189,6 +192,14 @@ export async function runChat(args: ChatArgs): Promise<void> {
     await saveConfig(cfg);
   };
 
+  // Load custom agent definitions from agents/*.md (project + global).
+  // Custom agents can define their own system prompt, model override, and
+  // tool allowlist. They extend the built-in "explore / general / plan" types.
+  const customAgents = await discoverAgents(cwd);
+  if (customAgents.size > 0) {
+    log.info("agents loaded", { count: customAgents.size, names: [...customAgents.keys()] });
+  }
+
   // Sub-agent spawner surfaced to the `task` tool. Runs a nested agent loop
   // silently with its own (small) context + iteration budget; multiple `task`
   // calls in one turn run in parallel via the parent loop's Promise.all.
@@ -204,31 +215,84 @@ export async function runChat(args: ChatArgs): Promise<void> {
   let subagentDepth = 0;
   const spawnAgent = async (
     prompt: string,
-    opts?: { description?: string; cwd?: string },
+    opts?: { description?: string; cwd?: string; subagent_type?: string },
   ): Promise<string> => {
     if (subagentDepth >= 3) throw new Error("max sub-agent depth (3) reached");
     subagentDepth++;
     const wasSilent = outputSilent;
     setOutputSilent(true);
     try {
-      const subMessages: ChatMessage[] = [
-        {
-          role: "system",
-          content: SUBAGENT_SYSTEM_PROMPT,
-        },
-        { role: "user", content: prompt },
-      ];
+      const agentType = opts?.subagent_type ?? "general";
+
+      // Check for custom agent definition first.
+      const customDef = customAgents.get(agentType);
+      let systemPrompt: string;
+      let subModel = SUBAGENT_MODEL;
+      let subTools: ToolRegistry;
+      let subIterations = 10;
+      let subMessages: ChatMessage[];
+
+      if (customDef) {
+        systemPrompt = customDef.systemPrompt;
+        if (customDef.model) subModel = customDef.model;
+        if (customDef.tools && customDef.tools.length > 0) {
+          subTools = new ToolRegistry(
+            tools.list().filter((t) => customDef.tools!.includes(t.name)),
+          );
+        } else {
+          subTools = tools;
+        }
+        subMessages = [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: prompt },
+        ];
+      } else if (agentType === "fork") {
+        // Fork agent — inherits parent's conversation context for branching
+        // exploration. Useful for "what if" analysis and comparing approaches.
+        systemPrompt = getAgentPrompt("general");
+        subTools = tools;
+        subModel = SUBAGENT_MODEL;
+        subIterations = 5;
+        const forkNote = `## Context
+You are a fork agent — you inherit the parent agent's conversation context
+for branching exploration. Answer ONLY the latest user question. Do not
+re-execute any tool calls from the parent's history.`;
+        subMessages = [
+          { role: "system", content: forkNote },
+          ...session.messages.filter((m) => m.role !== "system"),
+          { role: "user", content: prompt },
+        ];
+      } else {
+        // Built-in agent types (explore, general, plan).
+        const builtinType = (["explore", "general", "plan", "fork"] as const).includes(agentType as AgentType)
+          ? (agentType as AgentType)
+          : "general";
+        systemPrompt = getAgentPrompt(builtinType);
+        const isReadOnly = builtinType === "explore" || builtinType === "plan";
+        subTools = isReadOnly
+          ? new ToolRegistry(
+              tools.list().filter(
+                (t) => t.category === "fs-read" || t.category === "git" || t.category === "network" || t.category === "memory",
+              ),
+            )
+          : tools;
+        subMessages = [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: prompt },
+        ];
+      }
+
       const r = await runAgentLoop(subMessages, {
         apiKey,
-        model: SUBAGENT_MODEL,           // fixed fast model — sub-agents don't go through driveTurn's auto resolution
-        reasoning: false,                // no chain-of-thought for sub-tasks
+        model: subModel,
+        reasoning: false,
         reasoningEffort: undefined,
-        maxContext: 60_000,              // bounded budget, not the parent's 1M
+        maxContext: 60_000,
         temperature,
         maxTokens,
-        maxIterations: 10,
+        maxIterations: subIterations,
         baseUrl,
-        tools,
+        tools: subTools,
         permissions,
         cwd: opts?.cwd ?? cwd,
         spawnAgent, // allow further nesting up to the depth cap
