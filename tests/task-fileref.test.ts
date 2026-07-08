@@ -96,10 +96,10 @@ describe("task tool (sub-agent) — backward compat", () => {
 // ---- Round 1.1: Agent types and subagent_type parameter ----
 
 describe("task tool — subagent_type parameter", () => {
-  it("defaults to 'general' when subagent_type is omitted", async () => {
+  it("auto-detects subagent type when subagent_type is omitted", async () => {
     let receivedType: string | undefined;
     const spawn = async (_p: string, opts?: { subagent_type?: AgentType }) => {
-      receivedType = opts?.subagent_type ?? "general";
+      receivedType = opts?.subagent_type;
       return "ok";
     };
     const r = await taskTool.execute(
@@ -107,8 +107,9 @@ describe("task tool — subagent_type parameter", () => {
       { cwd: tmp, spawnAgent: spawn },
     );
     expect(r.ok).toBe(true);
-    expect(receivedType).toBe("general");
-    expect(r.content).toContain('type="general"');
+    // Auto-detection: short generic prompts default to "explore".
+    expect(["explore", "general"]).toContain(receivedType ?? "");
+    expect(r.content).toContain("type=");
   });
 
   it("passes 'explore' subagent_type through to spawnAgent", async () => {

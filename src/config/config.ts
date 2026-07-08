@@ -1,4 +1,6 @@
 // Configuration: layered global config + project-level instructions.
+// Config resolution order: env vars > CLI flags > project config > global config > defaults.
+// Inspired by codex's MDM → System → Enterprise → User → Project → SessionFlags layering.
 
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -11,6 +13,8 @@ import { askYesNo, askHidden } from "../ui/input.ts";
 export const CONFIG_DIR = path.join(os.homedir(), ".deepseek-cli");
 export const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 export const SESSION_DIR = path.join(CONFIG_DIR, "sessions");
+export const PROJECT_CONFIG_DIR = ".deepseek";
+export const PROJECT_CONFIG_FILE = path.join(PROJECT_CONFIG_DIR, "config.json");
 
 /**
  * Resolve the session storage directory. Honors DEEPSEEK_SESSION_DIR so tests
@@ -24,7 +28,7 @@ export function sessionDir(): string {
 export interface CliConfig {
   apiKey?: string;
   defaultModel?: string;
-  approvalMode?: "ask" | "auto" | "deny-pure-shell";
+  approvalMode?: "ask" | "auto" | "yolo" | "deny-pure-shell";
   temperature?: number;
   maxTokens?: number;
   baseUrl?: string;
@@ -38,6 +42,14 @@ export interface CliConfig {
   compaction?: boolean;
   /** Enable long-term memory generation (default true). */
   memoryGeneration?: boolean;
+  /** Workspace restriction mode. */
+  workspaceMode?: "off" | "workspace" | "readonly";
+  /** Use JSONL persistence (append-only, faster writes). */
+  jsonlPersistence?: boolean;
+  /** Enable hook system. */
+  hooks?: boolean;
+  /** Token usage display after each turn. */
+  showTokenUsage?: boolean;
 }
 
 export const DEFAULT_CONFIG: CliConfig = {
@@ -52,7 +64,7 @@ export async function ensureDirs(): Promise<void> {
   await fs.mkdir(SESSION_DIR, { recursive: true });
 }
 
-export async function loadConfig(): Promise<CliConfig> {
+export async function loadConfig(cwd?: string): Promise<CliConfig> {
   // Env var takes precedence for API key
   const envKey = process.env.DEEPSEEK_API_KEY;
   const envBase = process.env.DEEPSEEK_BASE_URL;
@@ -63,7 +75,7 @@ export async function loadConfig(): Promise<CliConfig> {
     try {
       const raw = await fs.readFile(CONFIG_FILE, "utf-8");
       const parsed = JSON.parse(raw) as Record<string, unknown>;
-      file = { ...DEFAULT_CONFIG, ...normalizeConfig(parsed) };
+      file = { ...file, ...normalizeConfig(parsed) };
       // Back-compat: legacy Python CLI stored the key as `api_key` (snake_case)
       if (!file.apiKey && typeof parsed.api_key === "string") {
         file.apiKey = parsed.api_key;
@@ -74,11 +86,48 @@ export async function loadConfig(): Promise<CliConfig> {
     }
   }
 
+  // Project-level config (overrides global, under env/cli).
+  if (cwd) {
+    file = { ...file, ...(await loadProjectConfig(cwd)) };
+  }
+
   const merged: CliConfig = { ...file };
   if (envKey) merged.apiKey = envKey;
   if (envBase) merged.baseUrl = envBase;
   if (envModel) merged.defaultModel = envModel;
   return merged;
+}
+
+/**
+ * Load project-level config from .deepseek/config.json.
+ * Walks up from cwd to find the nearest .deepseek/config.json.
+ */
+export async function loadProjectConfig(cwd: string): Promise<Partial<CliConfig>> {
+  const projectFile = path.join(cwd, PROJECT_CONFIG_FILE);
+  if (!existsSync(projectFile)) return {};
+  try {
+    const raw = await fs.readFile(projectFile, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const cfg = normalizeConfig(parsed);
+    if (Object.keys(cfg).length > 0) {
+      logConfig(`project config loaded from ${projectFile}`);
+    }
+    return cfg;
+  } catch (e) {
+    printSystem(`Project config at ${projectFile} is corrupted; ignoring.`, "yellow");
+    void e;
+    return {};
+  }
+}
+
+function logConfig(msg: string): void {
+  // Lazy import to avoid circular deps.
+  try {
+    const { log } = require("../log/logger.ts");
+    log.info("config", { msg });
+  } catch {
+    /* logger not available yet */
+  }
 }
 
 /**
@@ -151,6 +200,27 @@ function normalizeConfig(raw: Record<string, unknown>): Partial<CliConfig> {
   if (typeof raw.memoryGeneration === "boolean") {
     out.memoryGeneration = raw.memoryGeneration;
   } else if (raw.memoryGeneration !== undefined) dropped.push("memoryGeneration");
+
+  if (typeof raw.workspaceMode === "string") {
+    const v = raw.workspaceMode;
+    if (v === "off" || v === "workspace" || v === "readonly") {
+      out.workspaceMode = v;
+    } else {
+      dropped.push("workspaceMode");
+    }
+  } else if (raw.workspaceMode !== undefined) dropped.push("workspaceMode");
+
+  if (typeof raw.jsonlPersistence === "boolean") {
+    out.jsonlPersistence = raw.jsonlPersistence;
+  } else if (raw.jsonlPersistence !== undefined) dropped.push("jsonlPersistence");
+
+  if (typeof raw.hooks === "boolean") {
+    out.hooks = raw.hooks;
+  } else if (raw.hooks !== undefined) dropped.push("hooks");
+
+  if (typeof raw.showTokenUsage === "boolean") {
+    out.showTokenUsage = raw.showTokenUsage;
+  } else if (raw.showTokenUsage !== undefined) dropped.push("showTokenUsage");
 
   if (dropped.length > 0) {
     printSystem(`Config: ignoring invalid field(s): ${dropped.join(", ")}`, "yellow");

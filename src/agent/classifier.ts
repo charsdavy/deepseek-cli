@@ -202,3 +202,56 @@ existing patterns.`,
 
   return [categoryBlock, ...toolLines].join("\n");
 }
+
+/**
+ * Auto-detect the best sub-agent type for a given task prompt.
+ * This is used by the `task` tool to automatically select the right agent
+ * type when the caller doesn't specify one, reducing user friction.
+ * Inspired by claude's agent classifier.
+ */
+export type SubAgentType = "explore" | "general" | "plan" | "fork";
+
+const SUBAGENT_KEYWORDS: Record<SubAgentType, string[]> = {
+  explore: [
+    "find", "search", "locate", "list", "show", "grep", "what files",
+    "where is", "how does", "explore", "look at", "examine", "inspect",
+    "查找", "搜索", "列出", "查看", "探索", "找到",
+  ],
+  plan: [
+    "design", "architecture", "plan", "roadmap", "strategy", "proposal",
+    "should we", "what approach", "recommend approach", "trade-off",
+    "设计", "架构", "规划", "方案", "建议",
+  ],
+  fork: [
+    "what if", "hypothetical", "branch", "alternative", "consider if",
+    "如果", "假设",
+  ],
+  general: [
+    "implement", "create", "build", "add", "write", "develop", "make",
+    "fix", "debug", "edit", "modify", "change", "update",
+    "实现", "构建", "创建", "添加", "编写", "修复", "修改",
+  ],
+};
+
+export function detectSubAgentType(prompt: string): SubAgentType {
+  const lower = prompt.toLowerCase();
+  const scores: Record<string, number> = {};
+
+  for (const [type, keywords] of Object.entries(SUBAGENT_KEYWORDS)) {
+    let score = 0;
+    for (const kw of keywords) {
+      if (lower.includes(kw)) score++;
+    }
+    scores[type] = score;
+  }
+
+  const entries = Object.entries(scores) as [SubAgentType, number][];
+  entries.sort((a, b) => b[1] - a[1]);
+  const [topType, topScore] = entries[0];
+
+  // Default to "explore" for simple queries, "general" for complex ones.
+  if (topScore === 0) {
+    return prompt.length > 200 ? "general" : "explore";
+  }
+  return topType;
+}

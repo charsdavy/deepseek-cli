@@ -15,6 +15,7 @@
 
 import type { Tool, ToolResult } from "./types.ts";
 import { errTag, tag } from "../prompt/harness.ts";
+import { detectSubAgentType } from "../agent/classifier.ts";
 
 export const AGENT_TYPES = ["explore", "general", "plan", "fork"] as const;
 export type AgentType = (typeof AGENT_TYPES)[number];
@@ -65,9 +66,11 @@ export const taskTool: Tool = {
         error: "no_spawner",
       };
     }
-    const subagentType = (AGENT_TYPES as readonly string[]).includes(String(args.subagent_type ?? ""))
-      ? (args.subagent_type as AgentType)
-      : "general";
+    const subagentType = args.subagent_type !== undefined
+      ? ((AGENT_TYPES as readonly string[]).includes(String(args.subagent_type ?? ""))
+        ? (args.subagent_type as AgentType)
+        : "general") // Invalid explicit type → fall back to general
+      : detectSubAgentType(prompt); // No type specified → auto-detect
     const description = args.description ? String(args.description) : prompt.slice(0, 60);
     const typeLabel = subagentType !== "general" ? `[${subagentType}] ` : "";
     ctx.onProgress?.(`sub-agent: ${typeLabel}${description}`);

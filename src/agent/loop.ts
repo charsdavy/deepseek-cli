@@ -16,6 +16,10 @@ import { paint, symbol } from "../ui/theme.ts";
 import { blank, printError, printSystem, printTip, printToolHeader, streamWrite, writeLine, StreamMarkdown } from "../ui/render.ts";
 import { spinner } from "../ui/spinner.ts";
 import { log } from "../log/logger.ts";
+import type { HookConfig } from "./hooks.ts";
+import { runPreToolUseHooks, runPostToolUseHooks } from "./hooks.ts";
+import type { WorkspaceConfig } from "./workspace.ts";
+import { checkPath, checkTool } from "./workspace.ts";
 
 export interface AgentOptions {
   apiKey: string;
@@ -43,6 +47,12 @@ export interface AgentOptions {
   classification?: ClassificationResult;
   /** Allow the loop to use LLM compaction when context is tight. */
   allowCompaction?: boolean;
+  /** Hook configurations loaded from global + project hooks.json. */
+  hooks?: HookConfig[];
+  /** Workspace restriction config. */
+  workspace?: WorkspaceConfig;
+  /** Show token usage summary after each turn. */
+  showTokenUsage?: boolean;
   // UI callbacks (kept here so the loop stays decoupled from stdout specifics)
   onContentDelta?: (delta: string) => void;
   onReasoningDelta?: (delta: string) => void;
@@ -406,6 +416,53 @@ export async function runAgentLoop(
         continue;
       }
 
+      // Workspace restriction check.
+      const cwd = opts.cwd ?? process.cwd();
+      const ws = opts.workspace ?? { mode: "off" as const };
+      const wsToolCheck = checkTool(tool.name, tool.category, ws);
+      if (!wsToolCheck.allowed) {
+        messages.push({ role: "tool", tool_call_id: tc.id, content: wsToolCheck.reason ?? "Blocked by workspace policy." });
+        log.warn("workspace: tool blocked", { tool: tool.name, mode: ws.mode });
+        continue;
+      }
+      // Check file paths in args against workspace root.
+      if (ws.mode !== "off" && ws.root) {
+        const fileKeys = ["filePath", "path", "workdir", "output"];
+        for (const k of fileKeys) {
+          const fp = args[k];
+          if (typeof fp === "string" && fp.length > 0) {
+            const wsCheck = checkPath(fp, ws);
+            if (!wsCheck.allowed) {
+              messages.push({ role: "tool", tool_call_id: tc.id, content: wsCheck.reason ?? "Path outside workspace." });
+              log.warn("workspace: path blocked", { tool: tool.name, path: fp });
+              continue;
+            }
+          }
+        }
+      }
+
+      // PreToolUse hooks.
+      if (opts.hooks && opts.hooks.length > 0) {
+        const hookResult = await runPreToolUseHooks(opts.hooks, {
+          tool: { name: tool.name, category: tool.category, isDangerous: tool.isDangerous },
+          args,
+          cwd,
+        });
+        if (!hookResult.allow) {
+          log.info("hooks: PreToolUse denied", { tool: tool.name, reason: hookResult.reason });
+          messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: hookResult.reason ?? `Tool '${tool.name}' blocked by hook.`,
+          });
+          continue;
+        }
+        if (hookResult.rewrite) {
+          Object.assign(args, hookResult.rewrite);
+          log.info("hooks: PreToolUse rewrite", { tool: tool.name });
+        }
+      }
+
       const decision = await opts.permissions.check(tool, args);
       if (!decision.allow) {
         printSystem(`denied: ${tc.name}`, "yellow");
@@ -459,11 +516,39 @@ export async function runAgentLoop(
       spinner.stop();
 
       // Push tool messages in original order for the model.
+      const cwd = opts.cwd ?? process.cwd();
       for (const r of results) {
+        // PostToolUse hooks.
+        if (opts.hooks && opts.hooks.length > 0) {
+          const toolDef = tools.get(r.name);
+          if (toolDef) {
+            runPostToolUseHooks(opts.hooks, {
+              tool: { name: toolDef.name, category: toolDef.category, isDangerous: toolDef.isDangerous },
+              args: pending.find((p) => p.id === r.id)?.args ?? {},
+              result: r.result,
+              cwd,
+              ms: r.ms,
+            }).catch((e) => log.warn("hooks: PostToolUse async error", { error: String(e) }));
+          }
+        }
         opts.onToolEnd?.(r.name, r.result);
         const payload = capToolResult(r.result.content ?? "", r.name);
         messages.push({ role: "tool", tool_call_id: r.id, content: payload });
       }
+    }
+
+    // Token usage display (after every turn when enabled).
+    if (opts.showTokenUsage && lastUsage) {
+      const estimated = estimateConversationTokens(messages);
+      const remaining = (opts.maxContext ?? 60_000) - estimated;
+      writeLine();
+      process.stdout.write(
+        paint.dim(
+          `token usage: ${(lastUsage.totalTokens ?? 0).toLocaleString()} total | ` +
+          `context ~${Math.round(estimated / 1000)}k/${Math.round((opts.maxContext ?? 60_000) / 1000)}k ` +
+          `(${Math.round(remaining / 1000)}k remaining)`,
+        ) + "\r\n",
+      );
     }
 
     // Exploration-phase hint: count consecutive read-only-only iterations to
