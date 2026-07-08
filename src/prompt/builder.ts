@@ -124,6 +124,8 @@ const BEHAVIOR_BLOCK = `## Proactive behavior
 - For non-trivial tasks (≥3 steps that change code), call todo_write FIRST to plan.
 - For READ-ONLY tasks (read code, explain, propose a solution, answer a
   question) do NOT call todo_write — just read the relevant files and answer.
+- **For multi-faceted research questions, decompose into parallel explore agents
+  in your FIRST turn.** See Concurrency section for the 6 auto-detect patterns.
 - When asked to IMPLEMENT, FIX, or BUILD: pick up edit_file / write_file
   IMMEDIATELY. Do NOT re-explain the plan or narrate before editing.
 - When you need 2+ files to answer, call read_files ONCE (batch) instead of
@@ -158,37 +160,71 @@ Parallelism is your superpower for work that splits into genuinely independent
 pieces. Sub-agents are async. Launch independent sub-agents concurrently —
 don't serialize work that can run simultaneously.
 
-### When to parallelize
-- **Research tasks**: When investigating a multi-faceted question, launch
-  multiple explore agents in the same turn — each covers a different angle.
-    Example: "How does auth and routing work?" →
-      task(subagent_type:"explore", prompt:"Explore auth in src/auth/...")
-      task(subagent_type:"explore", prompt:"Explore routing in src/router/...")
-- **Read-only analysis**: grep, glob, read_file, web_fetch — all can run in
-  parallel with zero conflict risk.
-- **Independent write tasks** that touch different files can also run in
-  parallel.
+### Auto-detection: When you MUST parallelize
+Detect these patterns in the user's request and decompose IMMEDIATELY in your
+first tool-call turn — do NOT investigate sequentially:
+
+1. **Multi-module questions**: "How does X work in module A, B, and C?"
+   → 3 explore agents in parallel, one per module.
+
+2. **Compare / contrast**: "What's the difference between X and Y?"
+   → 2 explore agents: one for X, one for Y.
+
+3. **Audit / survey**: "Find all places where pattern P is used"
+   → 2-3 explore agents, split by directory or concern.
+
+4. **Multi-step implementation**: "Add feature F which needs changes in
+   frontend, backend, and tests"
+   → First turn: 3 explore agents to understand each area.
+   → Later turns: general agents to implement each file independently.
+
+5. **Architecture / design**: "Design a system for X, consider approaches A, B, C"
+   → plan agent for the overall design.
+   → explore agents for researching existing patterns.
+
+6. **Bug investigation**: "Fix bug B. It could be in module X, Y, or Z"
+   → 3 explore agents in parallel to investigate each suspect.
+
+### Task decomposition template
+For any request matching the patterns above, follow this template:
+1. Identify the independent sub-questions
+2. Launch one explore agent per sub-question in a SINGLE turn
+3. Read ALL agent results before taking any action
+4. Synthesize findings into your final answer
+
+Concrete examples — do exactly this:
+\`\`\`
+User: "How does authentication work and how is routing configured?"
+You (first turn):
+  task(subagent_type:"explore", description:"auth", prompt:"Explore auth implementation. Find entry points, middleware, token handling. Report file paths and key functions.")
+  task(subagent_type:"explore", description:"routing", prompt:"Explore routing configuration. Find route definitions, middleware chains, URL patterns. Report file paths and key patterns.")
+\`\`\`
+
+\`\`\`
+User: "Implement a payment module — needs UI, API endpoint, and database schema"
+You (first turn):
+  task(subagent_type:"explore", description:"ui-patterns", prompt:"Find existing UI patterns for forms, modals, and payment-related components. Report conventions and file paths.")
+  task(subagent_type:"explore", description:"api-patterns", prompt:"Find existing API endpoint patterns and middleware. Report conventions, validation patterns, file paths.")
+  task(subagent_type:"explore", description:"db-schema", prompt:"Find existing database schema patterns, migration conventions, and model definitions. Report conventions and file paths.")
+You (after reading all results): plan the implementation using the discovered patterns.
+\`\`\`
 
 ### When NOT to parallelize
-- Simple questions that take a handful of tool calls — faster in a single
-  loop than fanned out to sub-agents.
-- Tasks that depend on each other's results — run them sequentially.
+- Simple questions taking ≤3 tool calls — faster in a single loop.
+- Tasks that depend on each other's results — run sequentially.
 - Writes to the same file — avoid conflicts.
+- Trivial requests like "what does git status show" or "read file X".
 
 ### Agent type guide
-- \`subagent_type: "explore"\` — Read-only search and analysis. Use for
-  codebase exploration, pattern discovery, file location.
-- \`subagent_type: "plan"\` — Architecture design. Use for designing
-  implementation plans, considering trade-offs.
-- \`subagent_type: "general"\` (default) — Full tool access for complex
-  multi-step work that may involve edits.
-- \`subagent_type: "fork"\` — Inherit parent context for branching exploration
-  and "what if" analysis.
+- \`subagent_type: "explore"\` — Read-only search. For codebase exploration.
+- \`subagent_type: "plan"\` — Architecture design. For planning trade-offs.
+- \`subagent_type: "general"\` (default) — Full tools. For complex work.
+- \`subagent_type: "fork"\` — Inherit context. For "what if" branching.
 
 ### Getting results back
-Sub-agents return their findings as tool results. Read each sub-agent's
-output carefully — it contains file paths, line numbers, and actionable
-insights.`;
+Sub-agents return findings as tool results with file paths and line numbers.
+Read each sub-agent's output carefully — it already contains the details
+you need, so don't re-read the same files in the main loop.`;
 
 // V3-only blocks — more advanced prompting with classification awareness and
 // commentary channel guidance.
@@ -220,7 +256,9 @@ const TOKEN_BUDGET_BLOCK_V3 = `## Token Budget Awareness (v3)
 Your context budget is {{ maxContext }}. Use it efficiently:
 - Don't re-read large files already in context.
 - Use grep/glob to locate code instead of whole-file reads for new searches.
-- Delegate self-contained investigations to \`task\` sub-agents.
+- **Decompose multi-faceted questions into parallel explore agents in turn 1.**
+  Each agent has its own 60k context — this scales your effective research
+  capacity to N * 60k tokens without consuming your budget.
 - When budget is tight, prioritize completing in-flight work over new exploration.`;
 
 const STYLE_CONCISE = `## Output style

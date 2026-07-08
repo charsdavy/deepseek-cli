@@ -235,9 +235,19 @@ describe("system prompt concurrency block", () => {
     const text = built.text;
     expect(text).toContain("Superpower");
     expect(text).toContain("Parallelism");
-    expect(text).toContain("When to parallelize");
+    expect(text).toContain("Auto-detection");
     expect(text).toContain("When NOT to parallelize");
     expect(text).toContain("Agent type guide");
+  });
+
+  it("system prompt includes auto-detection patterns for parallelism", () => {
+    const built = buildSystemPrompt({ cwd: "/tmp" });
+    const text = built.text;
+    expect(text).toContain("Auto-detection");
+    expect(text).toContain("Multi-module questions");
+    expect(text).toContain("Compare / contrast");
+    expect(text).toContain("Task decomposition template");
+    expect(text).toContain("When NOT to parallelize");
   });
 
   it("system prompt still includes all original critical blocks", () => {
@@ -248,5 +258,6 @@ describe("system prompt concurrency block", () => {
     expect(text).toContain("Proactive behavior");
     expect(text).toContain("Code style");
     expect(text).toContain("## Safety");
+    expect(text).toContain("For multi-faceted research questions, decompose into parallel");
   });
 });
