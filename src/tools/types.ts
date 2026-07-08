@@ -22,7 +22,15 @@ export interface ToolContext {
    * Wired by the chat command when the agent session starts; absent in
    * contexts that can't spawn nested loops (e.g. unit tests).
    */
-  spawnAgent?: (prompt: string, opts?: { description?: string; cwd?: string }) => Promise<string>;
+  spawnAgent?: (
+    prompt: string,
+    opts?: {
+      description?: string;
+      cwd?: string;
+      /** Agent type: "explore" (read-only search), "general" (full tools), "plan" (architecture), "fork" (inherit context). Defaults to "general". */
+      subagent_type?: "explore" | "general" | "plan" | "fork";
+    },
+  ) => Promise<string>;
 }
 
 export interface ToolResult {

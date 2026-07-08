@@ -35,7 +35,10 @@ export interface AgentOptions {
   /** Override API base URL (self-hosted / proxy). */
   baseUrl?: string;
   /** Optional sub-agent spawner surfaced to tools via ToolContext. */
-  spawnAgent?: (prompt: string, opts?: { description?: string; cwd?: string }) => Promise<string>;
+  spawnAgent?: (
+    prompt: string,
+    opts?: { description?: string; cwd?: string; subagent_type?: "explore" | "general" | "plan" | "fork" },
+  ) => Promise<string>;
   /** Task classification result set by the caller before the loop. */
   classification?: ClassificationResult;
   /** Allow the loop to use LLM compaction when context is tight. */
