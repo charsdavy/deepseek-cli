@@ -18,7 +18,13 @@ const LEVEL_ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, e
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const RETENTION_DAYS = 7;
 
-const SECRET_KEY_RE = /(^|_)(key|token|secret|password|authorization|apikey|api_key|passwd|cred)$/i;
+const SECRET_KEYWORDS = ["key", "token", "secret", "password", "authorization", "passwd", "cred", "apikey"];
+
+function isSecretKey(k: string): boolean {
+  const lower = k.toLowerCase();
+  return SECRET_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
 const EMBEDDED_KEY_RE = /(sk-[A-Za-z0-9]{8,}|gh[po]_[A-Za-z0-9]{8,}|xox[bp]-[A-Za-z0-9]{8,})/g;
 
 function redactString(s: string): string {
@@ -31,7 +37,7 @@ function redactDeep(value: unknown): unknown {
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = SECRET_KEY_RE.test(k) ? "***" : redactDeep(v);
+      out[k] = isSecretKey(k) ? "***" : redactDeep(v);
     }
     return out;
   }
@@ -102,7 +108,8 @@ export class Logger {
   write(level: LogLevel, msg: string, fields?: Record<string, unknown>): void {
     if (!this.enabled || LEVEL_ORDER[level] < this.minLevel) return;
     const fieldsRedacted = redactDeep(fields ?? {}) as Record<string, unknown>;
-    const line = JSON.stringify({ ts: new Date().toISOString(), level, msg, ...fieldsRedacted });
+    const msgRedacted = redactString(msg);
+    const line = JSON.stringify({ ts: new Date().toISOString(), level, msg: msgRedacted, ...fieldsRedacted });
     // Serialize appends so order is preserved and a crash mid-write is bounded.
     this.writeQueue = this.writeQueue
       .then(async () => {

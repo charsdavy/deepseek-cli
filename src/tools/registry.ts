@@ -115,7 +115,7 @@ export class ToolRegistry {
     }
     return [
       ...this.sortByPriority(full).map(toOpenAiTool),
-      ...this.sortByPrioriyWithCost(catalog).map(toOpenAiTool),
+      ...this.sortByPriorityWithCost(catalog).map(toOpenAiTool),
     ];
   }
 
@@ -128,7 +128,7 @@ export class ToolRegistry {
     });
   }
 
-  private sortByPrioriyWithCost(tools: Tool[]): Tool[] {
+  private sortByPriorityWithCost(tools: Tool[]): Tool[] {
     return [...tools].sort((a, b) => schemaTokenCost(a) - schemaTokenCost(b));
   }
 

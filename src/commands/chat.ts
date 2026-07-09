@@ -511,6 +511,27 @@ re-execute any tool calls from the parent's history.`;
     };
   };
 
+  const runTurnWithSave = async (): Promise<void> => {
+    const turn = beginTurn();
+    try {
+      await driveTurn(session, {
+        apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
+        tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
+        promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system,
+        projectInstructions: instructions,
+        activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
+        classification, allowCompaction: compactionEnabled,
+      });
+      await saveSession(session);
+      if (memoryGenerationEnabled) generateAndPersistSummary(apiKey, session, cwd, baseUrl).catch(() => {});
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      printError(`turn failed: ${msg}`);
+    } finally {
+      turn.stop();
+    }
+  };
+
   // ---- One-shot mode ----
   if (args.prompt) {
     session.messages.push({ role: "user", content: await expandFileRefs(args.prompt, cwd) });
@@ -626,24 +647,7 @@ re-execute any tool calls from the parent's history.`;
             history.unshift(inv.task);
             if (history.length > 1000) history.length = 1000;
             appendHistory(inv.task).catch(() => {});
-            const turn = beginTurn();
-            try {
-              await driveTurn(session, {
-                apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
-                tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
-                promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system,
-                projectInstructions: instructions,
-                activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
-                classification, allowCompaction: compactionEnabled,
-              });
-              await saveSession(session);
-              if (memoryGenerationEnabled) generateAndPersistSummary(apiKey, session, cwd, baseUrl).catch(() => {});
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              printError(`turn failed: ${msg}`);
-            } finally {
-              turn.stop();
-            }
+            await runTurnWithSave();
             continue;
           }
           // Not a skill either: give a skill-aware hint.
@@ -658,24 +662,7 @@ re-execute any tool calls from the parent's history.`;
           }
           // Drop everything after the last user message, then re-run the turn.
           session.messages.length = idx + 1;
-          const turn = beginTurn();
-          try {
-            await driveTurn(session, {
-              apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
-              tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
-              promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system,
-              projectInstructions: instructions,
-              activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
-              classification, allowCompaction: compactionEnabled,
-            });
-            await saveSession(session);
-            if (memoryGenerationEnabled) generateAndPersistSummary(apiKey, session, cwd, baseUrl).catch(() => {});
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            printError(`turn failed: ${msg}`);
-          } finally {
-            turn.stop();
-          }
+          await runTurnWithSave();
           continue;
         }
         const handled = await handleSlashCommand(trimmed, session, { apiKey, model, temperature, tools, setModel: applyModel, skills: skillsApi, mcp: mcpApi, reasoning: { get: () => reasoning, set: setReasoning }, effort: { get: () => reasoningEffort, set: setReasoningEffort }, context: { get: () => maxContext, set: setMaxContext }, promptLog: { get: () => promptLogOn, set: setPromptLog }, permissions: permsApi, prefillHolder, runSideTurn, style: { get: () => outputStyle, set: (s) => { outputStyle = s; rebuildSystemPrompt(); } } });
@@ -693,24 +680,7 @@ re-execute any tool calls from the parent's history.`;
       history.unshift(trimmed);
       if (history.length > 1000) history.length = 1000;
       appendHistory(trimmed).catch(() => {});
-      const turn = beginTurn();
-      try {
-        await driveTurn(session, {
-          apiKey, model, reasoning, temperature, maxTokens, maxIterations, baseUrl, reasoningEffort, maxContext,
-          tools, permissions, toolCtx, signal: turn.controller.signal, spawnAgent,
-          promptLog: { get: () => promptLogOn }, promptVariant: session.promptVariant, userSystemPrompt: args.system,
-          projectInstructions: instructions,
-          activeSkills: Array.from(activeSkills.entries()).map(([name, content]) => ({ name, content })),
-          classification, allowCompaction: compactionEnabled,
-        });
-        await saveSession(session);
-        if (memoryGenerationEnabled) generateAndPersistSummary(apiKey, session, cwd, baseUrl).catch(() => {});
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        printError(`turn failed: ${msg}`);
-      } finally {
-        turn.stop();
-      }
+      await runTurnWithSave();
     }
   } finally {
     process.off("SIGINT", onSigInt);

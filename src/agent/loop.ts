@@ -119,6 +119,14 @@ export async function runAgentLoop(
   let wrapUpHintShown = false;
   // Ephemeral system messages (context/wrap-up nudges) injected for ONE iteration only.
   const ephemeralSystems: ChatMessage[] = [];
+  const stripEphemeralSystems = () => {
+    if (ephemeralSystems.length === 0) return;
+    for (const m of ephemeralSystems) {
+      const idx = messages.lastIndexOf(m);
+      if (idx >= 0) messages.splice(idx, 1);
+    }
+    ephemeralSystems.length = 0;
+  };
   log.info("agent loop start", { model: opts.model, reasoning: shouldReason, reasonEffort: opts.reasoningEffort, maxContext: opts.maxContext, messages: messagesIn.length, maxIterations });
 
   // Compaction cooldown tracker: incremented on compaction, decremented each turn.
@@ -132,6 +140,7 @@ export async function runAgentLoop(
     // Bail out early if the user aborted the turn.
     if (opts.signal?.aborted) {
       spinner.stop();
+      stripEphemeralSystems();
       return { messages, iterations, finalText, usage: lastUsage, aborted: true };
     }
 
@@ -139,13 +148,7 @@ export async function runAgentLoop(
     spinner.start("thinking…");
 
     // Strip last iteration's ephemeral system nudges.
-    if (ephemeralSystems.length > 0) {
-      for (const m of ephemeralSystems) {
-        const idx = messages.lastIndexOf(m);
-        if (idx >= 0) messages.splice(idx, 1);
-      }
-      ephemeralSystems.length = 0;
-    }
+    stripEphemeralSystems();
 
     // Trim context — with optional LLM-driven compaction for smart preservation.
     const compactionBudget = (opts.maxContext ?? 60_000) - 8000;
@@ -350,7 +353,7 @@ export async function runAgentLoop(
     finalText = acc.content;
 
     if (acc.toolCalls.length === 0) {
-      // No more tool calls — model finished its turn.
+      stripEphemeralSystems();
       return { messages, iterations, finalText, usage: lastUsage };
     }
 
@@ -373,7 +376,7 @@ export async function runAgentLoop(
     // scope (above the while) so the hallucination guard accumulates across
     // iterations, not just within one.
 
-    for (const tc of acc.toolCalls) {
+    toolLoop: for (const tc of acc.toolCalls) {
       const args = safeParseArgs(tc.arguments);
 
       let proceed = true;
@@ -435,7 +438,7 @@ export async function runAgentLoop(
             if (!wsCheck.allowed) {
               messages.push({ role: "tool", tool_call_id: tc.id, content: wsCheck.reason ?? "Path outside workspace." });
               log.warn("workspace: path blocked", { tool: tool.name, path: fp });
-              continue;
+              continue toolLoop;
             }
           }
         }
@@ -710,6 +713,7 @@ export async function runAgentLoop(
     }
   }
 
+  stripEphemeralSystems();
   const loopMs = Math.round(performance.now() - loopStart);
   log.info("agent loop end", {
     iterations,

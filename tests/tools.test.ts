@@ -56,7 +56,7 @@ describe("tokens", () => {
       {
         role: "assistant",
         content: "",
-        tool_calls: [{ id: "1", type: "function", function: { name: "read_file", arguments: '{"filePath":"/src/foo.ts"}' } }],
+        tool_calls: [{ function: { name: "read_file", arguments: '{"filePath":"/src/foo.ts"}' } }],
       },
     ]);
     expect(t).toBeGreaterThan(15);
@@ -603,7 +603,6 @@ describe("grep tool", () => {
 });
 
 // ---- bash outputBytesCap ----
-import { bashTool } from "../src/tools/bash.ts";
 
 describe("bash outputBytesCap", () => {
   it("schema includes outputBytesCap parameter", () => {

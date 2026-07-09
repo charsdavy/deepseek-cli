@@ -4,6 +4,7 @@
 import * as readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { paint } from "./theme.ts";
+import { visWidth } from "./width.ts";
 
 let rl: readline.Interface | null = null;
 let savedRawMode: boolean | null = null;
@@ -143,33 +144,6 @@ export async function askYesNo(prompt: string, defaultValue = false): Promise<bo
 }
 
 /** Visible width of a string (ANSI stripped; emoji/CJK = 2, else 1). */
-function visWidth(s: string): number {
-  const stripped = s.replace(/\x1b\[[0-9;]*m/g, "");
-  let w = 0;
-  for (const ch of stripped) {
-    const c = ch.codePointAt(0) ?? 0;
-    if (c < 0x20) continue;
-    w += isWideChar(c) ? 2 : 1;
-  }
-  return w;
-}
-
-/** True for codepoints that occupy two terminal columns (emoji / CJK / Hangul /
- *  fullwidth). The 0x2000–0x2E7F block (General Punctuation, Arrows, Math, …)
- *  is explicitly narrow so symbols like U+203A `›` are not mis-counted. */
-function isWideChar(c: number): boolean {
-  if (c >= 0x1F000 || (c >= 0x2600 && c <= 0x27BF)) return true; // emoji-ish
-  if (c >= 0x2000 && c < 0x2E80) return false; // punctuation / arrows / math — narrow
-  return (
-    (c >= 0x1100 && c < 0x2000) || // Hangul Jamo, etc.
-    (c >= 0x2E80 && c <= 0xA4CF) || // CJK radicals → Yi
-    (c >= 0xAC00 && c <= 0xD7A3) || // Hangul Syllables
-    (c >= 0xF900 && c <= 0xFAFF) || // CJK Compatibility Ideographs
-    (c >= 0xFE30 && c <= 0xFE4F) || // CJK Compatibility Forms
-    (c >= 0xFF00 && c <= 0xFFE6)    // Fullwidth ASCII / signs
-  );
-}
-
 /** Compute the visual layout of text on a terminal, accounting for
  *  width-based line wrapping. Pure function for testability.
  *  - totalLines: total visual terminal lines the rendered text occupies

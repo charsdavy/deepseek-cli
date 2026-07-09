@@ -26,7 +26,7 @@ export const writeFileTool: Tool = {
     additionalProperties: false,
   },
 
-  async execute(args): Promise<ToolResult> {
+  async execute(args, ctx): Promise<ToolResult> {
     const filePath = String(args.filePath ?? "");
     const content = String(args.content ?? "");
     if (!filePath) {
@@ -35,7 +35,7 @@ export const writeFileTool: Tool = {
     if (args.content === undefined || args.content === null) {
       return { ok: false, content: errTag("write", "missing_arg", "Missing required parameter: content."), error: "missing_arg" };
     }
-    const abs = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
+    const abs = path.isAbsolute(filePath) ? filePath : path.resolve(ctx.cwd, filePath);
 
     // Capture existence BEFORE writing so the action label is correct: the
     // original checked existsSync after the write, which always read true.

@@ -19,6 +19,8 @@ const PROMPT_TEXT_CAP = 8000;
 
 export const PROMPT_LOG_FILE = path.join(CONFIG_DIR, "prompt-log.jsonl");
 
+let writeQueue: Promise<void> = Promise.resolve();
+
 export function promptLogFile(): string {
   return process.env.DEEPSEEK_PROMPT_LOG_FILE ?? PROMPT_LOG_FILE;
 }
@@ -103,16 +105,21 @@ export function buildEntry(init: {
   };
 }
 
-/** Append a single entry. Best-effort: failures are swallowed. */
+/** Append a single entry. Best-effort: failures are swallowed. Serialized via a write queue to prevent prune/append races. */
 export async function appendPromptLog(entry: PromptLogEntry): Promise<void> {
   const f = promptLogFile();
-  try {
-    await fs.mkdir(path.dirname(f), { recursive: true });
-    await fs.appendFile(f, JSON.stringify(entry) + "\n", "utf-8");
-  } catch {
-    /* logging never throws */
-  }
-  prunePromptLog(MAX_ENTRIES).catch(() => {});
+  writeQueue = writeQueue
+    .then(async () => {
+      try {
+        await fs.mkdir(path.dirname(f), { recursive: true });
+        await fs.appendFile(f, JSON.stringify(entry) + "\n", "utf-8");
+        await prunePromptLog(MAX_ENTRIES);
+      } catch {
+        /* logging never throws */
+      }
+    })
+    .catch(() => {});
+  return writeQueue;
 }
 
 /** Load recent entries (newest-first). Returns [] if the file is absent. */

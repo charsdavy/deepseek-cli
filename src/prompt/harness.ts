@@ -18,6 +18,8 @@
 //   <toolname error="code">human message</toolname> — failure
 // Multi-word tag names use snake_case to match existing `web_search`.
 
+import { truncateLine } from "../ui/width.ts";
+
 export type AttrValue = string | number | undefined | null;
 
 /** Escape a string for safe use inside a double-quoted attribute value. */
@@ -87,10 +89,4 @@ export function lineNo(n: number, line: string, max = 1000): string {
 /** Plain bullet prefix used in multi-item results (glob/grep matches). */
 export function bullet(text: string): string {
   return `• ${text}`;
-}
-
-/** Truncate a single source line to `max` chars, suffixing with an ellipsis. */
-function truncateLine(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return s.slice(0, max - 1) + "…";
 }

@@ -139,46 +139,18 @@ export class McpRegistry {
 
   /** All bound tools for enabled servers only (disabled servers are hidden). */
   toTools(): Tool[] {
-    const self = this;
-    return this.bound
-      .filter((b) => !self.disabled.has(b.serverName))
-      .map(({ serverName, toolDef, dangerous }) => {
-      const name = `mcp_${serverName}_${toolDef.name}`;
-      return {
-        name,
-        description: toolDef.description ?? `MCP tool ${toolDef.name} from ${serverName}`,
-        category: "network",
-        isDangerous: dangerous,
-        parameters: (toolDef.inputSchema as Record<string, unknown>) ?? {
-          type: "object",
-          properties: {},
-        },
-        async execute(args: Record<string, unknown>, _ctx: ToolContext): Promise<ToolResult> {
-          try {
-            const client = self.clients.get(serverName);
-            if (!client) {
-              return { ok: false, content: `MCP server '${serverName}' is not connected.`, error: "mcp_not_connected" };
-            }
-            const text = await client.callTool(toolDef.name, args);
-            return {
-              ok: true,
-              content: text || "(empty result)",
-              uiSummary: `mcp/${serverName}/${toolDef.name}`,
-            };
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            return { ok: false, content: `MCP call failed: ${msg}`, error: "mcp_call_error" };
-          }
-        },
-      } satisfies Tool;
-    });
+    return this.buildTools((b) => !this.disabled.has(b.serverName));
   }
 
   /** Per-server Tool objects (re-used to (re)register when toggling back on). */
   toolsForServer(serverName: string): Tool[] {
+    return this.buildTools((b) => b.serverName === serverName);
+  }
+
+  private buildTools(filter: (b: BoundTool) => boolean): Tool[] {
     const self = this;
     return this.bound
-      .filter((b) => b.serverName === serverName)
+      .filter(filter)
       .map(({ serverName, toolDef, dangerous }) => {
         const name = `mcp_${serverName}_${toolDef.name}`;
         return {

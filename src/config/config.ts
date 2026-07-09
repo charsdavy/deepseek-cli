@@ -231,8 +231,9 @@ function normalizeConfig(raw: Record<string, unknown>): Partial<CliConfig> {
 export async function saveConfig(cfg: CliConfig): Promise<void> {
   await ensureDirs();
   const safe: CliConfig = { ...cfg };
-  await fs.writeFile(CONFIG_FILE, JSON.stringify(safe, null, 2), "utf-8");
-  await fs.chmod(CONFIG_FILE, 0o600);
+  const tmp = `${CONFIG_FILE}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(safe, null, 2), { encoding: "utf-8", mode: 0o600 });
+  await fs.rename(tmp, CONFIG_FILE);
 }
 
 // ---- Auth ----

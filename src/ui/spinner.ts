@@ -7,6 +7,7 @@
 //   • dot-blink — ⏺ alternating with a space, for tool execution
 
 import { C, outputSilent, paint, symbol } from "./theme.ts";
+import { safeStdoutWrite, isStdoutBroken } from "./render.ts";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const DOT_BLINK_FRAMES = [paint.bright.cyan("⏺"), paint.gray("⏺")];
@@ -43,9 +44,9 @@ function render(): void {
   // Subsequent frames: move up (\x1b[A), clear, rewrite, move back down.
   // \n moves the cursor down one line; \r goes to col 0.
   if (active.frame > 0) {
-    process.stdout.write(`\x1b[A`);
+    safeStdoutWrite(`\x1b[A`);
   }
-  process.stdout.write(`\r${C.reset}\x1b[K${frame} ${paint.gray(active.text)}${suffix}\r\n`);
+  safeStdoutWrite(`\r${C.reset}\x1b[K${frame} ${paint.gray(active.text)}${suffix}\r\n`);
   active.frame++;
 }
 
@@ -84,27 +85,22 @@ export const spinner = {
   stop(finalText?: string): void {
     if (!active) {
       if (finalText !== undefined && !outputSilent) {
-        process.stdout.write(`\r${C.reset}${finalText}\r\n`);
+        safeStdoutWrite(`\r${C.reset}${finalText}\r\n`);
       }
       return;
     }
     clearInterval(active.id);
-    if (!outputSilent) {
-      // The cursor is on the empty line below the spinner (placed there by
-      // render's trailing \n\r). Move up to the spinner line before acting.
+    if (!outputSilent && !isStdoutBroken()) {
       if (active.keepOnStop) {
-        // Render one final static frame (bright ⏺) and move to the next
-        // line, preserving the tool header as a permanent record.
-        const frame = active.frames[0]; // force bright ⏺
-        process.stdout.write(`\x1b[A\r${C.reset}\x1b[K${frame} ${paint.gray(active.text)}\r\n`);
+        const frame = active.frames[0];
+        safeStdoutWrite(`\x1b[A\r${C.reset}\x1b[K${frame} ${paint.gray(active.text)}\r\n`);
       } else {
-        // Clear the spinner line → cursor at col 0 of the now-empty line.
-        process.stdout.write(`\x1b[A\r${C.reset}\x1b[K`);
+        safeStdoutWrite(`\x1b[A\r${C.reset}\x1b[K`);
       }
     }
     active = null;
     if (finalText !== undefined && !outputSilent) {
-      process.stdout.write(`${finalText}\r\n`);
+      safeStdoutWrite(`${finalText}\r\n`);
     }
   },
 

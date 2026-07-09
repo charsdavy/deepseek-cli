@@ -31,13 +31,13 @@ export const grepTool: Tool = {
     additionalProperties: false,
   },
 
-  async execute(args): Promise<ToolResult> {
+  async execute(args, ctx): Promise<ToolResult> {
     const pattern = String(args.pattern ?? "");
     if (!pattern) {
       return { ok: false, content: "Missing required parameter: pattern.", error: "missing_arg" };
     }
-    const base = args.path ? String(args.path) : process.cwd();
-    const cwd = path.isAbsolute(base) ? base : path.resolve(process.cwd(), base);
+    const base = args.path ? String(args.path) : ctx.cwd;
+    const cwd = path.isAbsolute(base) ? base : path.resolve(ctx.cwd, base);
     const include = args.include ? String(args.include) : undefined;
 
     try {
@@ -67,10 +67,14 @@ function wrapGrep(pattern: string, cwd: string, matches: string[]): ToolResult {
   };
 }
 
+let rgAvailableCache: boolean | null = null;
+
 async function hasRg(): Promise<boolean> {
-  return await new Promise<boolean>((resolve) => {
+  if (rgAvailableCache !== null) return rgAvailableCache;
+  rgAvailableCache = await new Promise<boolean>((resolve) => {
     execFile("rg", ["--version"], (err) => resolve(!err));
   });
+  return rgAvailableCache;
 }
 
 async function runRg(pattern: string, cwd: string, include?: string): Promise<ToolResult | null> {

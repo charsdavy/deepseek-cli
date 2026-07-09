@@ -36,13 +36,13 @@ export const globTool: Tool = {
     additionalProperties: false,
   },
 
-  async execute(args): Promise<ToolResult> {
+  async execute(args, ctx): Promise<ToolResult> {
     const pattern = String(args.pattern ?? "");
     if (!pattern) {
       return { ok: false, content: "Missing required parameter: pattern.", error: "missing_arg" };
     }
-    const base = args.path ? String(args.path) : process.cwd();
-    const cwd = path.isAbsolute(base) ? base : path.resolve(process.cwd(), base);
+    const base = args.path ? String(args.path) : ctx.cwd;
+    const cwd = path.isAbsolute(base) ? base : path.resolve(ctx.cwd, base);
     const patterns = pattern.split(",").map((p) => p.trim()).filter(Boolean);
 
     const all: string[] = [];

@@ -29,12 +29,23 @@ function sessionPath(id: string): string {
   return path.join(sessionDir(), `${id}.session.json`);
 }
 
+let saveQueue: Promise<void> = Promise.resolve();
+
 export async function saveSession(session: Session): Promise<void> {
   session.updatedAt = new Date().toISOString();
-  await fs.mkdir(sessionDir(), { recursive: true });
-  await fs.writeFile(sessionPath(session.id), JSON.stringify(session, null, 2), "utf-8");
+  const p = sessionPath(session.id);
+  const data = JSON.stringify(session, null, 2);
+  saveQueue = saveQueue
+    .then(async () => {
+      await fs.mkdir(sessionDir(), { recursive: true });
+      const tmp = `${p}.tmp`;
+      await fs.writeFile(tmp, data, { encoding: "utf-8", mode: 0o600 });
+      await fs.rename(tmp, p);
+    })
+    .catch(() => {});
   // Opportunistic disk hygiene — prune oldest beyond the cap. Best-effort.
-  pruneSessions(200).catch(() => {});
+  saveQueue = saveQueue.then(async () => { await pruneSessions(200).catch(() => {}); });
+  return saveQueue;
 }
 
 export async function loadSession(id: string): Promise<Session | null> {

@@ -3,7 +3,6 @@ import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import { parseFrontmatter, agentDirs, discoverAgents } from "../src/agent/agents.ts";
-import type { AgentDefinition } from "../src/agent/agents.ts";
 
 // ---- Frontmatter parser ----
 

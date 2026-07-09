@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { shouldCompact, applyCompaction, COMPACTION_DROP_THRESHOLD } from "../src/agent/compaction.ts";
+import { shouldCompact, applyCompaction } from "../src/agent/compaction.ts";
 import type { ChatMessage } from "../src/api/client.ts";
 
 function sys(msg: string): ChatMessage {
