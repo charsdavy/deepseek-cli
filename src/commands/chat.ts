@@ -1304,7 +1304,15 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
       return "continue";
     }
     case "fast": {
-      // Writing-code phase shortcut: switch to the reasoner + high effort.
+      // Exploration phase shortcut: switch to the fast model + reasoning off.
+      ctx.setModel("deepseek-v4-flash");
+      await ctx.reasoning.set(false);
+      await ctx.effort.set("high");
+      printSystem(`${symbol.bolt} fast mode — v4-flash, reasoning off (use /think for writing code)`, "cyan");
+      return "continue";
+    }
+    case "think": {
+      // Writing-code phase shortcut: switch to the flagship + reasoning high.
       ctx.setModel("deepseek-v4-pro");
       await ctx.reasoning.set(true);
       await ctx.effort.set("high");
@@ -1693,8 +1701,8 @@ export async function handleSlashCommand(input: string, session: Session, ctx: S
 // Slash command names (incl. aliases) for Tab completion in the REPL.
 export const SLASH_COMMANDS = [
   "help", "?", "exit", "quit", "q", "clear", "btw", "fast", "think", "model", "reasoning", "thinking",
-  "context", "allow", "log", "promptlog", "new", "skill", "mcp", "tokens", "size", "tools",
-  "system", "save", "undo", "retry", "export", "sessions", "history",
+  "context", "allow", "approve", "log", "promptlog", "new", "skill", "mcp", "tokens", "size", "tools",
+  "system", "save", "undo", "retry", "export", "sessions", "history", "style", "yolo",
 ];
 
 /** Return slash commands matching the given input line (empty unless /-prefixed). */
@@ -1747,6 +1755,7 @@ function printSlashHelp(): void {
     ["/export [path]", "dump the transcript to stdout or a file"],
     ["/sessions [query]", "list recent sessions (or search by keyword)"],
     ["/style [concise|explain|learning]", "output personality: direct / educational / tutoring"],
+    ["/yolo", "yolo is a startup flag — restart with --yolo to enable"],
   ];
   // Display in stable A-Z order by command name.
   cmds.sort((a, b) => a[0].localeCompare(b[0]));
