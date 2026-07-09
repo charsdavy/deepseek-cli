@@ -120,6 +120,13 @@ export async function runChat(args: ChatArgs): Promise<void> {
   let outputStyle: OutputStyle = "concise";
   let classification: ClassificationResult | undefined;
 
+  // Load custom agent definitions from agents/*.md (project + global).
+  // Must be declared before rebuildSystemPrompt which references it.
+  const customAgents = await discoverAgents(cwd);
+  if (customAgents.size > 0) {
+    log.info("agents loaded", { count: customAgents.size, names: [...customAgents.keys()] });
+  }
+
   const rebuildSystemPrompt = (): void => {
     const customAgentNames = [...customAgents.keys()];
     const rebuilt = buildSystemPrompt({
@@ -191,14 +198,6 @@ export async function runChat(args: ChatArgs): Promise<void> {
     cfg.promptLog = on;
     await saveConfig(cfg);
   };
-
-  // Load custom agent definitions from agents/*.md (project + global).
-  // Custom agents can define their own system prompt, model override, and
-  // tool allowlist. They extend the built-in "explore / general / plan" types.
-  const customAgents = await discoverAgents(cwd);
-  if (customAgents.size > 0) {
-    log.info("agents loaded", { count: customAgents.size, names: [...customAgents.keys()] });
-  }
 
   // Sub-agent spawner surfaced to the `task` tool. Runs a nested agent loop
   // silently with its own (small) context + iteration budget; multiple `task`
