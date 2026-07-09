@@ -389,21 +389,33 @@ export async function askMultiline(
     // overwrite the prompt emoji (👤) with whatever text follows the \r
     // on the same line — making the icon disappear.
     const s = data.toString("utf-8").replace(/\r\n?/g, "\n");
-    // Detect a multi-line paste (bulk data with many newlines). Show a
-    // compact summary instead of flooding the terminal with pasted lines.
-    const lineCount = (s.match(/\n/g) || []).length;
-    if (lineCount > 5) {
-      buf = buf.slice(0, cur) + s + buf.slice(cur);
-      cur += s.length;
-      pasteSummary = paint.gray(`[pasted ${lineCount + 1} lines]`);
+    // If the buffer ends with a newline (Enter key sent in the same chunk as
+    // printable chars — common when typing fast or the terminal buffers input),
+    // strip it from the printable content and trigger handleEnter() after
+    // inserting the text. Without this, the Enter byte is absorbed into buf
+    // as a \n character and the line is never submitted.
+    const endsWithNewline = s.endsWith("\n");
+    const content = endsWithNewline ? s.slice(0, -1) : s;
+    if (content.length > 0) {
+      const contentLineCount = (content.match(/\n/g) || []).length;
+      if (contentLineCount > 5) {
+        buf = buf.slice(0, cur) + content + buf.slice(cur);
+        cur += content.length;
+        pasteSummary = paint.gray(`[pasted ${contentLineCount + 1} lines]`);
+        histIdx = -1;
+        if (endsWithNewline) { handleEnter(); return; }
+        render();
+        return;
+      }
+      buf = buf.slice(0, cur) + content + buf.slice(cur);
+      cur += content.length;
+      pasteSummary = null;
       histIdx = -1;
-      render();
+    }
+    if (endsWithNewline) {
+      handleEnter();
       return;
     }
-    buf = buf.slice(0, cur) + s + buf.slice(cur);
-    cur += s.length;
-    pasteSummary = null;
-    histIdx = -1;
     render();
   };
 
