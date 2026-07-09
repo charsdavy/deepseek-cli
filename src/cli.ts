@@ -87,6 +87,18 @@ export function parseArgs(argv: string[]): ParsedArgs {
   // we hit in production. undefined means "user didn't pass -r, defer to cfg".
   const out: ParsedArgs = { command: "chat" };
 
+  const nextStr = (flag: string): string => {
+    const v = args[++i];
+    if (typeof v !== "string" || v === "") throw new ArgError(`${flag} requires a value`);
+    return v;
+  };
+  const nextNum = (flag: string): number => {
+    const v = args[++i];
+    const n = Number(v);
+    if (!Number.isFinite(n)) throw new ArgError(`${flag} requires a valid number, got: ${v}`);
+    return n;
+  };
+
   let i = 0;
   while (i < args.length) {
     const a = args[i];
@@ -116,11 +128,11 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
       case "-m":
       case "--model":
-        out.model = args[++i];
+        out.model = nextStr("--model");
         break;
       case "-s":
       case "--system":
-        out.system = args[++i];
+        out.system = nextStr("--system");
         break;
       case "-r":
       case "--reasoning":
@@ -131,13 +143,13 @@ export function parseArgs(argv: string[]): ParsedArgs {
         out.continueLast = true;
         break;
       case "--resume":
-        out.resume = args[++i];
+        out.resume = nextStr("--resume");
         break;
       case "--yolo":
         out.yolo = true;
         break;
       case "--approval-mode": {
-        const v = args[++i] as string;
+        const v = nextStr("--approval-mode");
         if (v !== "ask" && v !== "auto" && v !== "yolo") {
           throw new ArgError(`--approval-mode must be ask|auto|yolo, got: ${v}`);
         }
@@ -145,16 +157,16 @@ export function parseArgs(argv: string[]): ParsedArgs {
         break;
       }
       case "--max-iterations":
-        out.maxIterations = Number(args[++i]);
+        out.maxIterations = nextNum("--max-iterations");
         break;
       case "--base-url":
-        out.baseUrl = args[++i];
+        out.baseUrl = nextStr("--base-url");
         break;
       case "--cwd":
-        out.cwd = args[++i];
+        out.cwd = nextStr("--cwd");
         break;
       case "--output-format": {
-        const v = args[++i] as string;
+        const v = nextStr("--output-format");
         if (v !== "text" && v !== "json") {
           throw new ArgError(`--output-format must be text|json, got: ${v}`);
         }
@@ -165,7 +177,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
         out.noMcp = true;
         break;
       case "--reasoning-effort": {
-        const v = args[++i] as string;
+        const v = nextStr("--reasoning-effort");
         if (v !== "high" && v !== "max") {
           throw new ArgError(`--reasoning-effort must be high|max, got: ${v}`);
         }
@@ -173,10 +185,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
         break;
       }
       case "--max-context":
-        out.maxContext = Number(args[++i]);
+        out.maxContext = nextNum("--max-context");
         break;
       case "--log-level": {
-        const v = args[++i] as string;
+        const v = nextStr("--log-level");
         if (v !== "debug" && v !== "info" && v !== "warn" && v !== "error") {
           throw new ArgError(`--log-level must be debug|info|warn|error, got: ${v}`);
         }
@@ -190,10 +202,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
         out.noPromptLog = true;
         break;
       case "--temperature":
-        out.temperature = Number(args[++i]);
+        out.temperature = nextNum("--temperature");
         break;
       case "--max-tokens":
-        out.maxTokens = Number(args[++i]);
+        out.maxTokens = nextNum("--max-tokens");
         break;
       case "--verbose":
         out.verbose = true;

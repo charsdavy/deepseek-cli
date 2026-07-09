@@ -14,6 +14,7 @@ import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import type { Tool, ToolResult } from "./types.ts";
 import { lineNo, tag } from "../prompt/harness.ts";
+import { readFileCache, touchCache, type CacheEntry } from "./read_file.ts";
 
 const MAX_BYTES = 200_000; // per-file ceiling, matches read_file
 const DEFAULT_LIMIT = 2000;
@@ -61,7 +62,7 @@ export const readFilesTool: Tool = {
     additionalProperties: false,
   },
 
-  async execute(args): Promise<ToolResult> {
+  async execute(args, ctx): Promise<ToolResult> {
     const rawPaths = args.paths;
     if (!Array.isArray(rawPaths) || rawPaths.length === 0) {
       return { ok: false, content: "Missing or empty required parameter: paths (non-empty array of file paths).", error: "missing_arg" };
@@ -90,7 +91,7 @@ export const readFilesTool: Tool = {
     });
 
     // Read all files concurrently — disk IO is the only cost and it parallelizes well.
-    const sections = await Promise.all(specs.map((s) => readOne(s)));
+    const sections = await Promise.all(specs.map((s) => readOne(s, ctx.cwd)));
 
     const okCount = sections.filter((s) => s.ok).length;
     const totalShown = sections.reduce((n, s) => n + (s.ok ? s.shownLines : 0), 0);
@@ -112,8 +113,8 @@ interface ReadOutcome {
   block: string;
 }
 
-async function readOne(spec: ReadSpec): Promise<ReadOutcome> {
-  const abs = path.isAbsolute(spec.filePath) ? spec.filePath : path.resolve(process.cwd(), spec.filePath);
+async function readOne(spec: ReadSpec, baseCwd: string): Promise<ReadOutcome> {
+  const abs = path.isAbsolute(spec.filePath) ? spec.filePath : path.resolve(baseCwd, spec.filePath);
 
   let stat;
   try {
@@ -130,11 +131,19 @@ async function readOne(spec: ReadSpec): Promise<ReadOutcome> {
   }
 
   let content: string;
-  try {
-    content = await fs.readFile(abs, "utf-8");
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return failBlock(abs, `Could not read as text: ${msg}. May be binary — describe its purpose instead of reading.`, "binary_or_unreadable");
+  const cached = readFileCache.get(abs);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    content = cached.content;
+    touchCache(abs, cached);
+  } else {
+    try {
+      content = await fs.readFile(abs, "utf-8");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return failBlock(abs, `Could not read as text: ${msg}. May be binary — describe its purpose instead of reading.`, "binary_or_unreadable");
+    }
+    const entry: CacheEntry = { mtimeMs: stat.mtimeMs, size: stat.size, content };
+    touchCache(abs, entry);
   }
 
   const lines = content.replace(/\r\n/g, "\n").split("\n");

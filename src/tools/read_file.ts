@@ -19,17 +19,17 @@ const MAX_BYTES = 200_000; // ~200KB hard ceiling per read
 const DEFAULT_LIMIT = 2000;
 const CACHE_MAX_ENTRIES = 32;
 
-interface CacheEntry {
+export interface CacheEntry {
   mtimeMs: number;
   size: number;
   content: string;
 }
 
-const readFileCache = new Map<string, CacheEntry>();
+export const readFileCache = new Map<string, CacheEntry>();
 
 /** Track last-access order for FIFO eviction. Map preserves insertion order
  *  in JS, so re-inserting on access via delete+set refreshes recency. */
-function touchCache(key: string, entry: CacheEntry): void {
+export function touchCache(key: string, entry: CacheEntry): void {
   readFileCache.delete(key);
   readFileCache.set(key, entry);
   if (readFileCache.size > CACHE_MAX_ENTRIES) {
@@ -69,12 +69,12 @@ export const readFileTool: Tool = {
     additionalProperties: false,
   },
 
-  async execute(args): Promise<ToolResult> {
+  async execute(args, ctx): Promise<ToolResult> {
     const filePath = String(args.filePath ?? "");
     if (!filePath) {
       return { ok: false, content: "Missing required parameter: filePath.", error: "missing_arg" };
     }
-    const abs = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
+    const abs = path.isAbsolute(filePath) ? filePath : path.resolve(ctx.cwd, filePath);
     const offset = Math.max(1, Number(args.offset ?? 1));
     const limit = Math.min(DEFAULT_LIMIT, Math.max(1, Number(args.limit ?? DEFAULT_LIMIT)));
 

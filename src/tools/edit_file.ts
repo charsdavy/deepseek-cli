@@ -32,7 +32,7 @@ export const editFileTool: Tool = {
     additionalProperties: false,
   },
 
-  async execute(args): Promise<ToolResult> {
+  async execute(args, ctx): Promise<ToolResult> {
     const filePath = String(args.filePath ?? "");
     const oldStr = String(args.oldString ?? "");
     const newStr = String(args.newString ?? "");
@@ -48,7 +48,7 @@ export const editFileTool: Tool = {
       return { ok: false, content: errTag("edit", "noop", "oldString and newString are identical; nothing to do."), error: "noop" };
     }
 
-    const abs = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
+    const abs = path.isAbsolute(filePath) ? filePath : path.resolve(ctx.cwd, filePath);
 
     const fail = (error: string, message: string): ToolResult => ({
       ok: false,
@@ -90,9 +90,10 @@ export const editFileTool: Tool = {
     }
 
     const diffLines = unidiff(content, newContent);
+    const replacements = replaceAll ? occurrences : 1;
     return {
       ok: true,
-      content: tag("edit", { path: abs, replacements: occurrences }, `${occurrences} replacement${occurrences > 1 ? "s" : ""} applied.\n\n${diffLines}`),
+      content: tag("edit", { path: abs, replacements }, `${replacements} replacement${replacements > 1 ? "s" : ""} applied.\n\n${diffLines}`),
       uiSummary: `edited ${abs}`,
     };
   },

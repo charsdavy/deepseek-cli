@@ -100,9 +100,9 @@ async function runHookScript(
     env: { ...process.env, DEEPSEEK_HOOK: "1" },
   });
   if (proc.stdin) {
-    const w = proc.stdin.getWriter();
-    await w.write(new TextEncoder().encode(stdin));
-    await w.close();
+    proc.stdin.write(stdin);
+    proc.stdin.flush();
+    proc.stdin.end();
   }
   const timer = setTimeout(() => {
     proc.kill("SIGTERM");

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { classify, type TaskCategory, type ClassificationResult } from "../src/agent/classifier.ts";
+import { classify, type TaskCategory } from "../src/agent/classifier.ts";
 
 describe("classify", () => {
   it("classifies implementation prompts", () => {
@@ -73,7 +73,7 @@ describe("classify", () => {
 
   it("all categories have valid hints", () => {
     const categories: TaskCategory[] = ["code_review", "implementation", "exploration", "debug", "planning", "general"];
-    for (const cat of categories) {
+    for (const _cat of categories) {
       // We can't force a category, but we can verify hints map exists for all
       const r = classify("generic prompt");
       expect(r.hints.toolPriority.length).toBeGreaterThan(0);

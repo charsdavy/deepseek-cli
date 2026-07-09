@@ -5,6 +5,8 @@
 
 import type { Tool, ToolResult } from "./types.ts";
 import { errTag, tag } from "../prompt/harness.ts";
+import { stripHtml } from "./web_fetch.ts";
+import { truncateLine } from "../ui/width.ts";
 
 const DEFAULT_MAX_RESULTS = 5;
 const ABSOLUTE_MAX_RESULTS = 10;
@@ -116,14 +118,14 @@ export function parseDuckDuckGoHtml(html: string, max: number): DDGResult[] {
   while ((m = linkRe.exec(html)) !== null) {
     const href = m[1];
     const url = decodeDdgRedirect(href);
-    const title = stripTags(m[2]).trim();
+    const title = stripHtml(m[2]).trim();
     if (url && title) links.push({ url, title });
   }
 
   const snippets: string[] = [];
   const snippetRe = /<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
   while ((m = snippetRe.exec(html)) !== null) {
-    const s = stripTags(m[1]).trim();
+    const s = stripHtml(m[1]).trim();
     snippets.push(s);
   }
 
@@ -155,21 +157,8 @@ function decodeDdgRedirect(href: string): string {
   }
 }
 
-function stripTags(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function truncate(s: string, n: number): string {
-  return s.length <= n ? s : s.slice(0, n - 1) + "…";
+  return truncateLine(s, n);
 }
 
 function clampMaxResults(v: unknown): number {

@@ -1,6 +1,7 @@
 // Terminal output helpers — markdown rendering, streaming, panels, spinner.
 
 import { combine, outputSilent, paint, symbol, C } from "./theme.ts";
+import { visWidth, truncateLine } from "./width.ts";
 export { setOutputSilent } from "./theme.ts";
 
 // ---- Low-level IO ----
@@ -24,6 +25,23 @@ let stdoutBroken = false;
 
 function isEpipe(e: unknown): boolean {
   return e instanceof Error && /EPIPE/.test(e.message);
+}
+
+export function isStdoutBroken(): boolean {
+  return stdoutBroken;
+}
+
+export function safeStdoutWrite(text: string): void {
+  if (outputSilent || stdoutBroken) return;
+  try {
+    process.stdout.write(text);
+  } catch (e) {
+    if (isEpipe(e)) {
+      stdoutBroken = true;
+      return;
+    }
+    throw e;
+  }
 }
 
 export function streamWrite(text: string): void {
@@ -79,11 +97,13 @@ export function renderMarkdown(src: string): string {
       const lang = fence[1] ?? "";
       const code: string[] = [];
       i++;
-      while (i < lines.length && !/^```\s*$/.test(lines[i])) {
+      while (i < lines.length && !/^```(\w+)?\s*$/.test(lines[i])) {
         code.push(lines[i]);
         i++;
       }
-      i++; // consume closing ```
+      if (i < lines.length) {
+        i++; // consume closing ```
+      }
       out.push(renderCodeBlock(code.join("\n"), lang));
       continue;
     }
@@ -394,12 +414,16 @@ export class StreamMarkdown {
    *  but guaranteed to be the final flush. Also closes an unclosed fence/table. */
   flush(remaining: string): string {
     let out = "";
-    if (remaining) {
-      out = this.renderLine(remaining);
-    }
-    // Close an unclosed fence at end of stream.
     if (this.inFence) {
+      // We're still inside an unclosed code fence. Render any remaining content
+      // as a fence line, then close the bottom border.
+      if (remaining) {
+        out = `${paint.gray("│")} ${C.bgGray}${C.white}${remaining}${C.reset}`;
+      }
       this.inFence = false;
+      out += (out ? "\n" : "") + paint.gray("└" + "─".repeat(Math.max(1, termWidth() - 1)));
+    } else if (remaining) {
+      out = this.renderLine(remaining);
     }
     // Close an unclosed table.
     if (this.inTable) {
@@ -426,31 +450,6 @@ function headerVisible(s: string): number {
 }
 
 /** Visible width of a string (ANSI stripped; emoji/CJK = 2, else 1). */
-function visWidth(s: string): number {
-  const stripped = s.replace(/\x1b\[[0-9;]*m/g, "");
-  let w = 0;
-  for (const ch of stripped) {
-    const c = ch.codePointAt(0) ?? 0;
-    if (c < 0x20) continue;
-    w += isWideChar(c) ? 2 : 1;
-  }
-  return w;
-}
-
-/** True for codepoints that occupy two terminal columns (CJK / emoji / fullwidth). */
-function isWideChar(c: number): boolean {
-  if (c >= 0x1F000 || (c >= 0x2600 && c <= 0x27BF)) return true;
-  if (c >= 0x2000 && c < 0x2E80) return false;
-  return (
-    (c >= 0x1100 && c < 0x2000) ||
-    (c >= 0x2E80 && c <= 0xA4CF) ||
-    (c >= 0xAC00 && c <= 0xD7A3) ||
-    (c >= 0xF900 && c <= 0xFAFF) ||
-    (c >= 0xFE30 && c <= 0xFE4F) ||
-    (c >= 0xFF00 && c <= 0xFFE6)
-  );
-}
-
 // ---- Table rendering ----
 
 /** Parse a markdown table row into cell contents (without leading/trailing pipes). */
@@ -503,11 +502,6 @@ function renderTable(rows: string[]): string {
   }
   out.push(border("└", "┴", "┘"));
   return out.join("\n");
-}
-
-function truncateLine(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return s.slice(0, max - 1) + "…";
 }
 
 // ---- Decorated output ----

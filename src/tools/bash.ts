@@ -47,7 +47,7 @@ export const bashTool: Tool = {
     additionalProperties: false,
   },
 
-  async execute(args): Promise<ToolResult> {
+  async execute(args, ctx): Promise<ToolResult> {
     const command = String(args.command ?? "");
     if (!command) {
       return { ok: false, content: "Missing required parameter: command.", error: "missing_arg" };
@@ -55,7 +55,7 @@ export const bashTool: Tool = {
     const workdir = args.workdir ? String(args.workdir) : undefined;
     const timeout = clamp(Number(args.timeout ?? DEFAULT_TIMEOUT_MS), 1000, 1_800_000);
     const outputCap = clamp(Number(args.outputBytesCap ?? OUTPUT_BYTES_CAP), 1000, 1_000_000);
-    const cwd = workdir ? (path.isAbsolute(workdir) ? workdir : path.resolve(process.cwd(), workdir)) : process.cwd();
+    const cwd = workdir ? (path.isAbsolute(workdir) ? workdir : path.resolve(ctx.cwd, workdir)) : ctx.cwd;
 
     try {
       const { stdout, stderr, code, durationMs, timedOut, stdoutOmitted, stderrOmitted, outputCapped } = await runShell(command, cwd, timeout, outputCap);

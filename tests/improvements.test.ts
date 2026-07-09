@@ -85,7 +85,7 @@ describe("ToolRegistry", () => {
 
 // === Hook System Tests ===
 
-import { runPreToolUseHooks, loadHooks } from "../src/agent/hooks.ts";
+import { runPreToolUseHooks } from "../src/agent/hooks.ts";
 
 describe("Hook system", () => {
   const testDir = path.join(os.tmpdir(), "deepseek-test-hooks-" + Date.now());
@@ -321,7 +321,8 @@ describe("Content block management", () => {
 
 // === JSONL Persistence Tests ===
 
-import { appendToJsonl, loadJsonlSession, saveNewMessages } from "../src/session/jsonl.ts";
+import { loadJsonlSession, saveNewMessages } from "../src/session/jsonl.ts";
+import type { ChatMessage } from "../src/api/client.ts";
 
 describe("JSONL persistence", () => {
   const testId = "test-jsonl-" + Date.now();
@@ -339,16 +340,16 @@ describe("JSONL persistence", () => {
 
   it("should save and load new messages incrementally", async () => {
     const meta = { model: "deepseek-chat", cwd: "/tmp" };
-    const messages = [
-      { role: "system" as const, content: "System prompt" },
-      { role: "user" as const, content: "Hello" },
+    const messages: ChatMessage[] = [
+      { role: "system", content: "System prompt" },
+      { role: "user", content: "Hello" },
     ];
     // First save.
     const count1 = await saveNewMessages(testId, messages, 0, meta);
     expect(count1).toBe(2);
 
     // Add more messages.
-    messages.push({ role: "assistant" as const, content: "Hi!" });
+    messages.push({ role: "assistant", content: "Hi!" });
     const count2 = await saveNewMessages(testId, messages, 2);
     expect(count2).toBe(3);
 
