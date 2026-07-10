@@ -234,7 +234,7 @@ function headerLength(header: string): number {
 export function inline(text: string): string {
   let t = text;
   // Inline code — gray background + white text for readability.
-  t = t.replace(/`([^`]+)`/g, (_, c) => `${paint.bgGray}${paint.white} ${c} ${paint.reset}`);
+  t = t.replace(/`([^`]+)`/g, (_, c) => paint.bgGray(paint.white(` ${c} `)));
   // Bold
   t = t.replace(/\*\*([^*]+)\*\*/g, (_, c) => paint.bold(c));
   // Italic
@@ -393,16 +393,27 @@ export class StreamMarkdown {
     return inline(line);
   }
 
-  /** Render one table row with │ borders and cell padding. */
+  /** Render one table row with │ borders and cell padding. Cells that
+   *  exceed the column width wrap across multiple display lines. */
   private renderTableRow(cells: string[], isHeader: boolean): string {
-    const parts = cells.map((cell, j) => {
+    const wrapped = cells.map((cell, j) => {
       const w = this.tableWidths[j] ?? Math.max(visWidth(cell), 3);
       const raw = isHeader ? paint.bold(inline(cell)) : inline(cell);
-      const content = truncateToWidth(raw, w);
-      const pad = " ".repeat(Math.max(0, w - visWidth(content)));
-      return ` ${content}${pad} `;
+      return wrapToWidth(raw, w).map((line) => {
+        const pad = " ".repeat(Math.max(0, w - visWidth(line.replace(/\x1b\[[0-9;]*m/g, ""))));
+        return ` ${line}${pad} `;
+      });
     });
-    return `${paint.gray("│")}${parts.join(paint.gray("│"))}${paint.gray("│")}`;
+    const maxLines = Math.max(1, ...wrapped.map((w) => w.length));
+    const merged: string[] = [];
+    for (let l = 0; l < maxLines; l++) {
+      const parts = cells.map((_, j) => {
+        const w = this.tableWidths[j] ?? 3;
+        return wrapped[j][l] ?? " ".repeat(w + 2);
+      });
+      merged.push(`${paint.gray("│")}${parts.join(paint.gray("│"))}${paint.gray("│")}`);
+    }
+    return merged.join("\n");
   }
 
   /** Render a horizontal table border (┌┬┐ / ├┼┤ / └┴┘). */
@@ -469,19 +480,22 @@ function isTableSeparator(line: string): boolean {
 /** Proportionally shrink column widths so the table fits within the terminal. */
 function clampTableWidths(widths: number[]): number[] {
   const tw = termWidth();
-  // Total = cell widths + (cols+1) borders + (cols * 2) padding spaces
   const cols = widths.length;
   const overhead = (cols + 1) + (cols * 2); // │ borders + " cell " padding
   const used = widths.reduce((a, b) => a + b, 0) + overhead;
   if (used <= tw) return widths;
 
   const budget = tw - overhead;
+  // Term too narrow for even the borders — give each column 1 char
+  // and let the table overflow: better than invisible cells.
+  if (budget <= 0) return widths.map(() => 1);
+
   const total = widths.reduce((a, b) => a + b, 0);
   if (total <= 0) return widths;
   let remaining = budget;
   const clamped: number[] = [];
   for (let i = 0; i < widths.length; i++) {
-    const share = Math.max(3, Math.floor((widths[i] / total) * budget));
+    const share = Math.max(1, Math.floor((widths[i] / total) * budget));
     clamped.push(share);
     remaining -= share;
   }
@@ -495,26 +509,48 @@ function clampTableWidths(widths: number[]): number[] {
   return clamped;
 }
 
-/** Truncate a string to fit within a visible width, honoring ANSI and CJK widths. */
-function truncateToWidth(s: string, maxW: number): string {
-  if (maxW <= 0) return "";
-  const stripped = s.replace(/\x1b\[[0-9;]*m/g, "");
-  if (visWidth(stripped) <= maxW) return s;
+/** Split text into lines fitting within maxW visible columns, honoring ANSI and CJK widths. */
+function wrapToWidth(text: string, maxW: number): string[] {
+  if (maxW <= 0) return [text];
+  const plain = text.replace(/\x1b\[[0-9;]*m/g, "");
+  if (visWidth(plain) <= maxW) return [text];
 
-  // Build truncated version character by character.
-  const chars = [...s];
-  let result = "";
-  let w = 0;
-  let inAnsi = false;
-  for (const ch of chars) {
-    if (ch === "\x1b") { inAnsi = true; result += ch; continue; }
-    if (inAnsi) { result += ch; if (ch === "m") inAnsi = false; continue; }
-    const cw = isWideChar(ch.codePointAt(0) ?? 0) ? 2 : 1;
-    if (w + cw > maxW) break;
-    w += cw;
-    result += ch;
+  const lines: string[] = [];
+  let remaining = text;
+
+  while (remaining) {
+    const remPlain = remaining.replace(/\x1b\[[0-9;]*m/g, "");
+    if (visWidth(remPlain) <= maxW) {
+      lines.push(remaining);
+      break;
+    }
+
+    let line = "";
+    let w = 0;
+    let inAnsi = false;
+    const chars = [...remaining];
+    let i = 0;
+
+    for (; i < chars.length; i++) {
+      const ch = chars[i];
+      if (ch === "\x1b") { inAnsi = true; line += ch; continue; }
+      if (inAnsi) { line += ch; if (ch === "m") inAnsi = false; continue; }
+      const cw = isWideChar(ch.codePointAt(0) ?? 0) ? 2 : 1;
+      if (w + cw > maxW) break;
+      w += cw;
+      line += ch;
+    }
+
+    if (!line) {
+      // maxW is narrower than the first visible character — force one char.
+      line = chars[0];
+      i = 1;
+    }
+    lines.push(line);
+    remaining = chars.slice(i).join("");
   }
-  return result + paint.dim("…");
+
+  return lines.length > 0 ? lines : [text];
 }
 
 /** Render a complete table (header + separator + data rows) as a bordered block. */
@@ -544,15 +580,24 @@ function renderTable(rows: string[]): string {
     return `${paint.gray(l)}${segments.join(paint.gray(m))}${paint.gray(r)}`;
   };
   const renderRow = (cells: string[], isHeader: boolean): string => {
-    const parts = cells.map((cell, j) => {
+    const wrapped = cells.map((cell, j) => {
       const w = widths[j] ?? Math.max(visWidth(cell), 3);
       const raw = isHeader ? paint.bold(inline(cell)) : inline(cell);
-      // Truncate cell content that exceeds the column width.
-      const content = truncateToWidth(raw, w);
-      const pad = " ".repeat(Math.max(0, w - visWidth(content)));
-      return ` ${content}${pad} `;
+      return wrapToWidth(raw, w).map((line) => {
+        const pad = " ".repeat(Math.max(0, w - visWidth(line.replace(/\x1b\[[0-9;]*m/g, ""))));
+        return ` ${line}${pad} `;
+      });
     });
-    return `${paint.gray("│")}${parts.join(paint.gray("│"))}${paint.gray("│")}`;
+    const maxLines = Math.max(1, ...wrapped.map((w) => w.length));
+    const merged: string[] = [];
+    for (let l = 0; l < maxLines; l++) {
+      const parts = cells.map((_, j) => {
+        const w = widths[j] ?? 3;
+        return wrapped[j][l] ?? " ".repeat(w + 2);
+      });
+      merged.push(`${paint.gray("│")}${parts.join(paint.gray("│"))}${paint.gray("│")}`);
+    }
+    return merged.join("\n");
   };
 
   const out = [border("┌", "┬", "┐"), renderRow(headerCells, true), border("├", "┼", "┤")];
