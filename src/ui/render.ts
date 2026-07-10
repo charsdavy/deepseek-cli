@@ -1,7 +1,7 @@
 // Terminal output helpers — markdown rendering, streaming, panels, spinner.
 
 import { combine, outputSilent, paint, symbol, C } from "./theme.ts";
-import { visWidth, truncateLine } from "./width.ts";
+import { visWidth, truncateLine, isWideChar } from "./width.ts";
 export { setOutputSilent } from "./theme.ts";
 
 // ---- Low-level IO ----
@@ -397,7 +397,8 @@ export class StreamMarkdown {
   private renderTableRow(cells: string[], isHeader: boolean): string {
     const parts = cells.map((cell, j) => {
       const w = this.tableWidths[j] ?? Math.max(visWidth(cell), 3);
-      const content = isHeader ? paint.bold(inline(cell)) : inline(cell);
+      const raw = isHeader ? paint.bold(inline(cell)) : inline(cell);
+      const content = truncateToWidth(raw, w);
       const pad = " ".repeat(Math.max(0, w - visWidth(content)));
       return ` ${content}${pad} `;
     });
@@ -406,7 +407,9 @@ export class StreamMarkdown {
 
   /** Render a horizontal table border (┌┬┐ / ├┼┤ / └┴┘). */
   private tableBorder(l: string, m: string, r: string): string {
-    const segments = this.tableWidths.map((w) => paint.gray("─".repeat(w + 2)));
+    const widths = clampTableWidths([...this.tableWidths]);
+    this.tableWidths = widths;
+    const segments = widths.map((w) => paint.gray("─".repeat(w + 2)));
     return `${paint.gray(l)}${segments.join(paint.gray(m))}${paint.gray(r)}`;
   }
 
@@ -463,6 +466,57 @@ function isTableSeparator(line: string): boolean {
   return cells.length > 0 && cells.every((c) => /^:?-{1,}:?$/.test(c));
 }
 
+/** Proportionally shrink column widths so the table fits within the terminal. */
+function clampTableWidths(widths: number[]): number[] {
+  const tw = termWidth();
+  // Total = cell widths + (cols+1) borders + (cols * 2) padding spaces
+  const cols = widths.length;
+  const overhead = (cols + 1) + (cols * 2); // │ borders + " cell " padding
+  const used = widths.reduce((a, b) => a + b, 0) + overhead;
+  if (used <= tw) return widths;
+
+  const budget = tw - overhead;
+  const total = widths.reduce((a, b) => a + b, 0);
+  if (total <= 0) return widths;
+  let remaining = budget;
+  const clamped: number[] = [];
+  for (let i = 0; i < widths.length; i++) {
+    const share = Math.max(3, Math.floor((widths[i] / total) * budget));
+    clamped.push(share);
+    remaining -= share;
+  }
+  // Distribute any leftover budget to the last columns.
+  let j = clamped.length - 1;
+  while (remaining > 0 && j >= 0) {
+    clamped[j]++;
+    remaining--;
+    j--;
+  }
+  return clamped;
+}
+
+/** Truncate a string to fit within a visible width, honoring ANSI and CJK widths. */
+function truncateToWidth(s: string, maxW: number): string {
+  if (maxW <= 0) return "";
+  const stripped = s.replace(/\x1b\[[0-9;]*m/g, "");
+  if (visWidth(stripped) <= maxW) return s;
+
+  // Build truncated version character by character.
+  const chars = [...s];
+  let result = "";
+  let w = 0;
+  let inAnsi = false;
+  for (const ch of chars) {
+    if (ch === "\x1b") { inAnsi = true; result += ch; continue; }
+    if (inAnsi) { result += ch; if (ch === "m") inAnsi = false; continue; }
+    const cw = isWideChar(ch.codePointAt(0) ?? 0) ? 2 : 1;
+    if (w + cw > maxW) break;
+    w += cw;
+    result += ch;
+  }
+  return result + paint.dim("…");
+}
+
 /** Render a complete table (header + separator + data rows) as a bordered block. */
 function renderTable(rows: string[]): string {
   if (rows.length < 2) return rows.map((r) => inline(r)).join("\n");
@@ -471,7 +525,7 @@ function renderTable(rows: string[]): string {
   const dataRows = rows.slice(2).map(parseTableRow);
 
   // Column widths: max of separator dashes, header content, and data content.
-  const widths = sepCells.map((sep, j) => {
+  let widths = sepCells.map((sep, j) => {
     const dashLen = sep.replace(/^:?/, "").replace(/:?$/, "").length;
     const hdrW = headerCells[j] ? visWidth(headerCells[j]) : 0;
     return Math.max(dashLen, hdrW, 3);
@@ -482,6 +536,9 @@ function renderTable(rows: string[]): string {
     });
   }
 
+  // Shrink columns proportionally when the table exceeds terminal width.
+  widths = clampTableWidths(widths);
+
   const border = (l: string, m: string, r: string): string => {
     const segments = widths.map((w) => paint.gray("─".repeat(w + 2)));
     return `${paint.gray(l)}${segments.join(paint.gray(m))}${paint.gray(r)}`;
@@ -489,7 +546,9 @@ function renderTable(rows: string[]): string {
   const renderRow = (cells: string[], isHeader: boolean): string => {
     const parts = cells.map((cell, j) => {
       const w = widths[j] ?? Math.max(visWidth(cell), 3);
-      const content = isHeader ? paint.bold(inline(cell)) : inline(cell);
+      const raw = isHeader ? paint.bold(inline(cell)) : inline(cell);
+      // Truncate cell content that exceeds the column width.
+      const content = truncateToWidth(raw, w);
       const pad = " ".repeat(Math.max(0, w - visWidth(content)));
       return ` ${content}${pad} `;
     });
