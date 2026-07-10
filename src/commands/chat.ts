@@ -685,7 +685,7 @@ re-execute any tool calls from the parent's history.`;
     process.off("SIGINT", onSigInt);
     await saveSession(session).catch(() => {});
     if (memoryGenerationEnabled) {
-      await generateAndPersistSummary(apiKey, session, cwd, baseUrl).catch(() => {});
+      generateAndPersistSummary(apiKey, session, cwd, baseUrl).catch(() => {});
     }
     await mcp.close().catch(() => {});
     restoreTerminal();
