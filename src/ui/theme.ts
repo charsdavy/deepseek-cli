@@ -56,6 +56,7 @@ export const paint = {
   bgRed: (t: string) => wrap(C.bgRed, t),
   bgGray: (t: string) => wrap(C.bgGray, t),
   white: (t: string) => wrap(C.white, t),
+  reset: (t: string) => wrap(C.reset, t),
   bright: {
     red: (t: string) => wrap(C.brightRed, t),
     green: (t: string) => wrap(C.brightGreen, t),

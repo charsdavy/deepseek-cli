@@ -13,7 +13,7 @@ import type { ToolRegistry } from "../tools/registry.ts";
 import type { ToolContext, ToolResult } from "../tools/types.ts";
 import type { ClassificationResult } from "./classifier.ts";
 import { paint, symbol } from "../ui/theme.ts";
-import { blank, printError, printSystem, printTip, printToolHeader, streamWrite, writeLine, StreamMarkdown } from "../ui/render.ts";
+import { blank, printError, printSystem, printTip, printToolHeader, streamWrite, writeLine, StreamMarkdown, inline } from "../ui/render.ts";
 import { spinner } from "../ui/spinner.ts";
 import { log } from "../log/logger.ts";
 import type { HookConfig } from "./hooks.ts";
@@ -802,14 +802,14 @@ export function makeStreamRenderer(opts: StreamRenderOptions) {
     while ((nl = reasonBuf.indexOf("\n")) >= 0) {
       const line = reasonBuf.slice(0, nl);
       reasonBuf = reasonBuf.slice(nl + 1);
-      process.stdout.write(paint.dim(line) + "\r\n");
+      process.stdout.write(paint.dim(inline(line)) + "\r\n");
     }
   }
 
   /** Flush any remaining partial reasoning line (no trailing \n). */
   function flushReasoningTail(): void {
     if (reasonBuf) {
-      process.stdout.write(paint.dim(reasonBuf) + "\r\n");
+      process.stdout.write(paint.dim(inline(reasonBuf)) + "\r\n");
       reasonBuf = "";
     }
   }

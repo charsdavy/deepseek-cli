@@ -234,7 +234,7 @@ function headerLength(header: string): number {
 export function inline(text: string): string {
   let t = text;
   // Inline code — gray background + white text for readability.
-  t = t.replace(/`([^`]+)`/g, (_, c) => `${C.bgGray}${C.white} ${c} ${C.reset}`);
+  t = t.replace(/`([^`]+)`/g, (_, c) => `${paint.bgGray}${paint.white} ${c} ${paint.reset}`);
   // Bold
   t = t.replace(/\*\*([^*]+)\*\*/g, (_, c) => paint.bold(c));
   // Italic
@@ -368,9 +368,9 @@ export class StreamMarkdown {
     if (h) {
       const level = h[1].length;
       const text = inline(h[2].trim());
-      if (level <= 2) return combine(paint.bold, paint.cyan)(text);
+      if (level <= 2) return combine(paint.bold, paint.bright.cyan)(text);
       if (level === 3) return combine(paint.bold, paint.cyan)(text);
-      return paint.bold(text);
+      return paint.cyan(text);
     }
     // Blockquote
     if (/^>\s?/.test(line)) {
